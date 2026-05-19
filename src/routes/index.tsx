@@ -1,14 +1,16 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { serverFetchAndStorePrices, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
+import { serverEnsureSectors, serverFetchAndStorePrices, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
+import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
 
 export const Route = createFileRoute('/')({
   loader: async () => {
+    await serverEnsureSectors()
+
     const accounts = await serverGetAllAccounts()
     const holdings: Record<string, HoldingWithPrice[]> = {}
-    
-    // Load holdings for all accounts
+
     const holdingsPromises = accounts.map(async (account) => {
       holdings[account] = await serverGetHoldings({ data: account })
     })
@@ -211,6 +213,21 @@ function Dashboard() {
         </div>
       )}
 
+      {/* Allocation charts */}
+      <div className={`grid gap-6 ${accounts.length > 1 ? 'lg:grid-cols-2' : ''}`}>
+        <AllocationDonut
+          holdings={allHoldings}
+          subtitle="Share of combined portfolio by current value (or invested if unpriced)"
+        />
+        {accounts.length > 1 && (
+          <AllocationDonut
+            title="Allocation by Account"
+            subtitle="Share of combined portfolio per account"
+            slices={slicesFromAccounts(accounts, holdings)}
+          />
+        )}
+      </div>
+
       {/* Combined summary */}
       <div className="rounded-xl border border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 p-6">
         <h2 className="mb-4 text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
@@ -350,7 +367,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   )
 }
 
-type SortCol = 'symbol' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct'
+type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct'
 
 function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
   const [sortCol, setSortCol] = useState<SortCol>('gainLoss')
@@ -366,7 +383,7 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
   }
 
   // Merge same symbol across accounts, tracking per-account shares
-  const map = new Map<string, { symbol: string; shares: number; accountShares: Record<string, number>; invested: number; current: number }>()
+  const map = new Map<string, { symbol: string; sector: string | null; shares: number; accountShares: Record<string, number>; invested: number; current: number }>()
   const addHolding = (h: HoldingWithPrice) => {
     if (h.latest_price === null) return
     const existing = map.get(h.symbol)
@@ -375,9 +392,11 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
       existing.invested += h.total_invested
       existing.current += h.shares * h.latest_price
       existing.accountShares[h.account] = (existing.accountShares[h.account] || 0) + h.shares
+      if (!existing.sector && h.sector) existing.sector = h.sector
     } else {
       map.set(h.symbol, {
         symbol: h.symbol,
+        sector: h.sector,
         shares: h.shares,
         accountShares: { [h.account]: h.shares },
         invested: h.total_invested,
@@ -392,6 +411,7 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
     .sort((a, b) => {
       let cmp = 0
       if (sortCol === 'symbol') cmp = a.symbol.localeCompare(b.symbol)
+      else if (sortCol === 'sector') cmp = (a.sector ?? '').localeCompare(b.sector ?? '')
       else if (sortCol === 'shares') cmp = a.shares - b.shares
       else if (sortCol === 'invested') cmp = a.invested - b.invested
       else if (sortCol === 'current') cmp = a.current - b.current
@@ -417,6 +437,7 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
               <th className="px-6 py-3 text-left">#</th>
               {([
                 { col: 'symbol' as SortCol, label: 'Symbol', align: 'left' },
+                { col: 'sector' as SortCol, label: 'Sector', align: 'left' },
                 { col: 'shares' as SortCol, label: 'Shares', align: 'right' },
                 { col: 'invested' as SortCol, label: 'Invested (₨)', align: 'right' },
                 { col: 'current' as SortCol, label: 'Current (₨)', align: 'right' },
@@ -452,6 +473,9 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
                     >
                       {r.symbol}
                     </Link>
+                  </td>
+                  <td className="px-6 py-3 text-gray-400 text-xs max-w-[12rem] truncate" title={r.sector ?? undefined}>
+                    {r.sector ?? '—'}
                   </td>
                   <td className="px-6 py-3 text-right text-gray-300">
                     <div className="relative inline-block group">

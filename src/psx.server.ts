@@ -1,12 +1,79 @@
 /**
  * PSX price fetcher — scrapes dps.psx.com.pk/company/{SYMBOL}
- * The current price is in: <div class="quote__close">Rs.655.00</div>
- * LDCP (last day closing price) is also available as fallback.
+ * The current price is in: <motion.div class="quote__close">Rs.655.00</motion.div>
+ * Sector is in: <motion.div class="quote__sector"><span>...</span></motion.div>
  */
 
 const PSX_BASE = 'https://dps.psx.com.pk'
 
-export async function fetchPsxPrice(symbol: string): Promise<number | null> {
+export interface PsxQuote {
+  price: number | null
+  sector: string | null
+}
+
+function parsePsxQuote(html: string): PsxQuote {
+  let price: number | null = null
+
+  const closeMatch = html.match(/class="quote__close"[^>]*>Rs\.([\d,]+\.?\d*)</)
+  if (closeMatch) {
+    const v = parseFloat(closeMatch[1].replace(/,/g, ''))
+    if (!isNaN(v) && v > 0) price = v
+  }
+
+  if (price === null) {
+    const ldcpMatch = html.match(/stats_label">LDCP<\/div>\s*<div[^>]*>([\d,]+\.?\d*)/)
+    if (ldcpMatch) {
+      const v = parseFloat(ldcpMatch[1].replace(/,/g, ''))
+      if (!isNaN(v) && v > 0) price = v
+    }
+  }
+
+  return { price, sector: parseSector(html) }
+}
+
+function parseSector(html: string): string | null {
+  const patterns = [
+    /class="quote__sector"[^>]*>\s*<span>([^<]+)</i,
+    /quote__sector"[^>]*><span>([^<]+)</i,
+  ]
+  for (const pattern of patterns) {
+    const match = html.match(pattern)
+    if (match) {
+      const sector = match[1].replace(/&amp;/g, '&').trim()
+      if (sector) return sector
+    }
+  }
+  return null
+}
+
+export async function fetchAndStoreSectors(
+  symbols: string[],
+  onStore: (symbol: string, sector: string) => void,
+): Promise<{ stored: string[]; failed: string[] }> {
+  const stored: string[] = []
+  const failed: string[] = []
+  const CHUNK = 4
+  for (let i = 0; i < symbols.length; i += CHUNK) {
+    const batch = symbols.slice(i, i + CHUNK)
+    const results = await Promise.all(
+      batch.map(async symbol => {
+        const { sector } = await fetchPsxQuote(symbol)
+        return { symbol, sector }
+      }),
+    )
+    for (const { symbol, sector } of results) {
+      if (sector) {
+        onStore(symbol, sector)
+        stored.push(symbol)
+      } else {
+        failed.push(symbol)
+      }
+    }
+  }
+  return { stored, failed }
+}
+
+async function fetchPsxHtml(symbol: string): Promise<string | null> {
   const url = `${PSX_BASE}/company/${encodeURIComponent(symbol)}`
   try {
     const res = await fetch(url, {
@@ -18,43 +85,37 @@ export async function fetchPsxPrice(symbol: string): Promise<number | null> {
       signal: AbortSignal.timeout(12000),
     })
     if (!res.ok) return null
-    const html = await res.text()
-
-    // Primary: current traded price  <div class="quote__close">Rs.655.00</div>
-    const closeMatch = html.match(/class="quote__close"[^>]*>Rs\.([\d,]+\.?\d*)</)
-    if (closeMatch) {
-      const v = parseFloat(closeMatch[1].replace(/,/g, ''))
-      if (!isNaN(v) && v > 0) return v
-    }
-
-    // Fallback: LDCP stat value
-    const ldcpMatch = html.match(/stats_label">LDCP<\/div>\s*<div[^>]*>([\d,]+\.?\d*)/)
-    if (ldcpMatch) {
-      const v = parseFloat(ldcpMatch[1].replace(/,/g, ''))
-      if (!isNaN(v) && v > 0) return v
-    }
-
-    return null
+    return await res.text()
   } catch {
     return null
   }
 }
 
+export async function fetchPsxQuote(symbol: string): Promise<PsxQuote> {
+  const html = await fetchPsxHtml(symbol)
+  if (!html) return { price: null, sector: null }
+  return parsePsxQuote(html)
+}
+
+export async function fetchPsxPrice(symbol: string): Promise<number | null> {
+  const { price } = await fetchPsxQuote(symbol)
+  return price
+}
+
 export async function fetchAllPrices(
   symbols: string[],
-): Promise<{ symbol: string; price: number | null; error?: string }[]> {
-  // Throttle: 4 concurrent requests to be polite
-  const results: { symbol: string; price: number | null; error?: string }[] = []
+): Promise<{ symbol: string; price: number | null; sector: string | null; error?: string }[]> {
+  const results: { symbol: string; price: number | null; sector: string | null; error?: string }[] = []
   const CHUNK = 4
   for (let i = 0; i < symbols.length; i += CHUNK) {
     const batch = symbols.slice(i, i + CHUNK)
     const batchResults = await Promise.all(
       batch.map(async sym => {
         try {
-          const price = await fetchPsxPrice(sym)
-          return { symbol: sym, price }
+          const { price, sector } = await fetchPsxQuote(sym)
+          return { symbol: sym, price, sector }
         } catch (err) {
-          return { symbol: sym, price: null, error: String(err) }
+          return { symbol: sym, price: null, sector: null, error: String(err) }
         }
       }),
     )
