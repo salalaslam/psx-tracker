@@ -275,7 +275,19 @@ export function getLatestPrices(): Record<string, { price: number; fetched_at: s
 
 export interface PortfolioValuePoint {
   sess: string
+  /** Combined value of holdings actually owned on this date */
   portfolio_value: number
+  /** Today's holdings valued at this date's prices */
+  current_assets_value: number
+}
+
+export function getCurrentCombinedHoldings(): Record<string, number> {
+  const rows = db.prepare(`
+    SELECT symbol, SUM(shares) AS shares
+    FROM holdings
+    GROUP BY symbol
+  `).all() as { symbol: string; shares: number }[]
+  return Object.fromEntries(rows.map(r => [r.symbol, r.shares]))
 }
 
 export type TradeSide = 'buy' | 'sell'
@@ -566,6 +578,8 @@ export function getPortfolioValueHistory(): PortfolioValuePoint[] {
     ORDER BY fetched_at DESC LIMIT 1
   `)
 
+  const currentHoldings = getCurrentCombinedHoldings()
+
   return days.map(({ d }) => {
     const holdings = getCombinedSharesAsOf(d)
     let portfolio_value = 0
@@ -573,7 +587,14 @@ export function getPortfolioValueHistory(): PortfolioValuePoint[] {
       const row = priceStmt.get(symbol, d) as { price: number } | undefined
       if (row) portfolio_value += row.price * qty
     }
-    return { sess: `${d}T12:00`, portfolio_value }
+
+    let current_assets_value = 0
+    for (const [symbol, qty] of Object.entries(currentHoldings)) {
+      const row = priceStmt.get(symbol, d) as { price: number } | undefined
+      if (row) current_assets_value += row.price * qty
+    }
+
+    return { sess: `${d}T12:00`, portfolio_value, current_assets_value }
   })
 }
 

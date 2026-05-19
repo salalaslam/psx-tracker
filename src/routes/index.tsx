@@ -275,33 +275,43 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   if (data.length === 0) return null
 
   const W = 800
-  const H = 180
+  const H = 200
   const padL = 72, padR = 16, padT = 12, padB = 36
   const chartW = W - padL - padR
   const chartH = H - padT - padB
 
   const values = data.map(d => d.portfolio_value)
+  const currentAssetValues = data.map(d => d.current_assets_value)
   const latest = values[values.length - 1]
+  const latestCurrent = currentAssetValues[currentAssetValues.length - 1]
   const first = values[0]
+  const firstCurrent = currentAssetValues[0]
   const change = latest - first
   const changePct = first > 0 ? (change / first) * 100 : 0
+  const currentChange = latestCurrent - firstCurrent
+  const currentChangePct = firstCurrent > 0 ? (currentChange / firstCurrent) * 100 : 0
   const isUp = change >= 0
+  const isCurrentUp = currentChange >= 0
   const color = isUp ? '#34d399' : '#f87171'
   const areaColor = isUp ? '#34d39915' : '#f8717115'
 
-  const minV = Math.min(...values)
-  const maxV = Math.max(...values)
+  const allValues = [...values, ...currentAssetValues]
+  const minV = Math.min(...allValues)
+  const maxV = Math.max(...allValues)
   const range = maxV - minV || latest * 0.02 || 1
   const rangeMin = minV - range * 0.05
   const rangeMax = maxV + range * 0.05
   const rangeTotal = rangeMax - rangeMin
 
-  const pts = values.map((v, i) => ({
-    x: padL + (data.length === 1 ? chartW / 2 : (i / (data.length - 1)) * chartW),
-    y: padT + chartH - ((v - rangeMin) / rangeTotal) * chartH,
-  }))
+  const xAt = (i: number) =>
+    padL + (data.length === 1 ? chartW / 2 : (i / (data.length - 1)) * chartW)
+  const yAt = (v: number) => padT + chartH - ((v - rangeMin) / rangeTotal) * chartH
+
+  const pts = values.map((v, i) => ({ x: xAt(i), y: yAt(v) }))
+  const currentPts = currentAssetValues.map((v, i) => ({ x: xAt(i), y: yAt(v) }))
 
   const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  const currentPolyline = currentPts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
   const lastPt = pts[pts.length - 1]
   const firstPt = pts[0]
   const bottomY = padT + chartH
@@ -325,13 +335,32 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
       <div className="px-6 py-4 border-b border-gray-800 flex items-center justify-between">
         <div>
           <h2 className="text-base font-semibold text-gray-200">Portfolio Value Over Time</h2>
-          <p className="text-xs text-gray-500 mt-0.5">Combined current value at each price fetch</p>
+          <p className="text-xs text-gray-500 mt-0.5">
+            Holdings as of each day vs today&apos;s portfolio at historical prices
+          </p>
+          {data.length >= 2 && (
+            <div className="flex gap-4 mt-2 text-xs text-gray-400">
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-3 h-0.5 rounded bg-emerald-400" />
+                As held
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="inline-block w-3 h-0.5 rounded border-t border-dashed border-sky-400" />
+                Today&apos;s holdings
+              </span>
+            </div>
+          )}
         </div>
         {data.length >= 2 && (
           <div className="text-right">
             <p className="text-lg font-bold text-white">₨ {fmt(latest)}</p>
             <p className={`text-sm font-medium ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
               {isUp ? '+' : ''}{fmt(change)} ({isUp ? '+' : ''}{changePct.toFixed(2)}%)
+            </p>
+            <p className="text-xs text-gray-500 mt-1">Today&apos;s holdings (Jan 1 → today)</p>
+            <p className="text-sm font-semibold text-sky-300">₨ {fmt(latestCurrent)}</p>
+            <p className={`text-xs font-medium ${isCurrentUp ? 'text-sky-400/80' : 'text-red-400/80'}`}>
+              {isCurrentUp ? '+' : ''}{fmt(currentChange)} ({isCurrentUp ? '+' : ''}{currentChangePct.toFixed(2)}%)
             </p>
           </div>
         )}
@@ -343,7 +372,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
         </div>
       ) : (
         <div className="px-2 py-2">
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: '180px' }}>
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: '200px' }}>
             {ySteps.map(({ y, v }, i) => (
               <g key={i}>
                 <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#1f2937" strokeWidth="1" />
@@ -353,8 +382,23 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
               </g>
             ))}
             <path d={areaD} fill={areaColor} />
+            <polyline
+              points={currentPolyline}
+              fill="none"
+              stroke="#38bdf8"
+              strokeWidth="2"
+              strokeDasharray="6 4"
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
             <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
             <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="4" fill={color} />
+            <circle
+              cx={currentPts[currentPts.length - 1].x.toFixed(1)}
+              cy={currentPts[currentPts.length - 1].y.toFixed(1)}
+              r="3"
+              fill="#38bdf8"
+            />
             {labelIndices.map(i => (
               <text key={i} x={pts[i].x.toFixed(1)} y={H - 4} textAnchor="middle" fill="#4b5563" fontSize="9">
                 {fmtDate(data[i].sess)}
