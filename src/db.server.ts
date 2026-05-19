@@ -282,6 +282,7 @@ export interface AddTradeResult {
 export interface PurchaseImportRow {
   traded_at: string
   symbol: string
+  side?: TradeSide
   shares: number
   rate_slip: number
   commission: number
@@ -318,17 +319,45 @@ function applyBuyToHolding(
   ).run(nextShares, nextCostAvg, nextInvested, existing.id)
 }
 
+function applySellToHolding(account: string, symbol: string, shares: number): void {
+  const existing = db.prepare(
+    `SELECT id, shares, cost_avg, total_invested
+     FROM holdings WHERE account = ? AND symbol = ?`,
+  ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+
+  if (!existing || shares > existing.shares) {
+    throw new Error(
+      `Cannot sell ${shares} ${symbol}: only ${existing?.shares ?? 0} shares held`,
+    )
+  }
+
+  const nextShares = existing.shares - shares
+  if (nextShares === 0) {
+    db.prepare('DELETE FROM holdings WHERE id = ?').run(existing.id)
+    return
+  }
+
+  const nextInvested = existing.cost_avg * nextShares
+  db.prepare(
+    `UPDATE holdings SET shares = ?, total_invested = ? WHERE id = ?`,
+  ).run(nextShares, nextInvested, existing.id)
+}
+
 export function rebuildHoldingsFromTransactions(account: string): void {
   db.prepare('DELETE FROM holdings WHERE account = ?').run(account)
-  const buys = db.prepare(`
-    SELECT symbol, shares, cost_per_share
+  const txs = db.prepare(`
+    SELECT symbol, side, shares, cost_per_share
     FROM transactions
-    WHERE account = ? AND side = 'buy'
+    WHERE account = ?
     ORDER BY traded_at ASC, id ASC
-  `).all(account) as { symbol: string; shares: number; cost_per_share: number }[]
+  `).all(account) as { symbol: string; side: TradeSide; shares: number; cost_per_share: number }[]
 
-  for (const row of buys) {
-    applyBuyToHolding(account, row.symbol, row.shares, row.cost_per_share)
+  for (const row of txs) {
+    if (row.side === 'buy') {
+      applyBuyToHolding(account, row.symbol, row.shares, row.cost_per_share)
+    } else {
+      applySellToHolding(account, row.symbol, row.shares)
+    }
   }
 }
 
@@ -345,7 +374,7 @@ export function importPurchaseHistory(
     INSERT INTO transactions (
       account, symbol, side, shares, cost_per_share,
       rate_slip, commission, sales_tax, cdc_charges, traded_at
-    ) VALUES (?, ?, 'buy', ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const run = db.transaction(() => {
@@ -358,11 +387,13 @@ export function importPurchaseHistory(
     for (const row of sorted) {
       const symbol = row.symbol.trim().toUpperCase()
       const shares = Math.trunc(row.shares)
+      const side: TradeSide = row.side === 'sell' ? 'sell' : 'buy'
       const costPerShare = row.amount / shares
       const tradedAt = row.traded_at.includes('T') ? row.traded_at : `${row.traded_at}T12:00:00Z`
       insertTx.run(
         acct,
         symbol,
+        side,
         shares,
         costPerShare,
         row.rate_slip,
@@ -381,7 +412,7 @@ export function importPurchaseHistory(
   return run()
 }
 
-export function getTransactions(account: string, limit = 200): Transaction[] {
+export function getTransactions(account: string, limit = 500): Transaction[] {
   return db.prepare(`
     SELECT id, account, symbol, side, shares, cost_per_share,
            rate_slip, commission, sales_tax, cdc_charges, traded_at
