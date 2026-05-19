@@ -102,6 +102,43 @@ export async function fetchPsxPrice(symbol: string): Promise<number | null> {
   return price
 }
 
+export type PsxEodRow = {
+  date: string
+  close: number
+}
+
+export async function fetchPsxEod(symbol: string, sinceDate?: string): Promise<PsxEodRow[]> {
+  const url = `${PSX_BASE}/timeseries/eod/${encodeURIComponent(symbol)}`
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        Accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(15000),
+    })
+    if (!res.ok) return []
+    const json = (await res.json()) as { status?: number; data?: [number, number][] }
+    if (json.status !== 1 || !Array.isArray(json.data)) return []
+
+    const sinceTs = sinceDate
+      ? Math.floor(new Date(`${sinceDate}T00:00:00Z`).getTime() / 1000)
+      : 0
+
+    const rows: PsxEodRow[] = []
+    for (const [ts, close] of json.data) {
+      if (sinceTs && ts < sinceTs) continue
+      if (!Number.isFinite(close) || close <= 0) continue
+      const date = new Date(ts * 1000).toISOString().slice(0, 10)
+      rows.push({ date, close })
+    }
+    return rows
+  } catch {
+    return []
+  }
+}
+
 export async function fetchAllPrices(
   symbols: string[],
 ): Promise<{ symbol: string; price: number | null; sector: string | null; error?: string }[]> {

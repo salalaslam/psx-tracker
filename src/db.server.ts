@@ -217,6 +217,39 @@ export function storeSnapshot(symbol: string, price: number): void {
   ).run(symbol, price)
 }
 
+export function storeSnapshotAt(symbol: string, price: number, fetchedAt: string): void {
+  db.prepare(
+    `INSERT INTO price_snapshots (symbol, price, fetched_at) VALUES (?, ?, ?)`
+  ).run(symbol, price, fetchedAt)
+}
+
+export function hasSnapshotOnDate(symbol: string, date: string): boolean {
+  return !!db.prepare(
+    `SELECT 1 FROM price_snapshots WHERE symbol = ? AND date(fetched_at) = date(?)`
+  ).get(symbol, date)
+}
+
+export function getCombinedSharesAsOf(asOfDate: string): Record<string, number> {
+  const txs = db.prepare(`
+    SELECT symbol, side, shares
+    FROM transactions
+    WHERE date(traded_at) <= date(?)
+    ORDER BY traded_at ASC, id ASC
+  `).all(asOfDate) as { symbol: string; side: TradeSide; shares: number }[]
+
+  const shares: Record<string, number> = {}
+  for (const t of txs) {
+    if (t.side === 'buy') {
+      shares[t.symbol] = (shares[t.symbol] ?? 0) + t.shares
+    } else {
+      const next = (shares[t.symbol] ?? 0) - t.shares
+      if (next <= 0) delete shares[t.symbol]
+      else shares[t.symbol] = next
+    }
+  }
+  return shares
+}
+
 export function getPriceHistory(symbol: string): PriceSnapshot[] {
   return db.prepare(`
     SELECT * FROM price_snapshots
@@ -519,31 +552,28 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
 }
 
 export function getPortfolioValueHistory(): PortfolioValuePoint[] {
-  const sessions = (db.prepare(`
-    SELECT DISTINCT strftime('%Y-%m-%dT%H:%M', fetched_at) AS sess
+  const days = (db.prepare(`
+    SELECT DISTINCT date(fetched_at) AS d
     FROM price_snapshots
-    ORDER BY sess
-  `).all() as { sess: string }[])
+    ORDER BY d
+  `).all() as { d: string }[])
 
-  if (sessions.length === 0) return []
-
-  const symbolShares = db.prepare(`
-    SELECT symbol, SUM(shares) AS total_shares FROM holdings GROUP BY symbol
-  `).all() as { symbol: string; total_shares: number }[]
+  if (days.length === 0) return []
 
   const priceStmt = db.prepare(`
     SELECT price FROM price_snapshots
-    WHERE symbol = ? AND strftime('%Y-%m-%dT%H:%M', fetched_at) <= ?
+    WHERE symbol = ? AND date(fetched_at) <= date(?)
     ORDER BY fetched_at DESC LIMIT 1
   `)
 
-  return sessions.map(({ sess }) => {
+  return days.map(({ d }) => {
+    const holdings = getCombinedSharesAsOf(d)
     let portfolio_value = 0
-    for (const { symbol, total_shares } of symbolShares) {
-      const row = priceStmt.get(symbol, sess) as { price: number } | undefined
-      if (row) portfolio_value += row.price * total_shares
+    for (const [symbol, qty] of Object.entries(holdings)) {
+      const row = priceStmt.get(symbol, d) as { price: number } | undefined
+      if (row) portfolio_value += row.price * qty
     }
-    return { sess, portfolio_value }
+    return { sess: `${d}T12:00`, portfolio_value }
   })
 }
 
