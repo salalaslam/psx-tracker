@@ -395,10 +395,31 @@ function AccountPage() {
                 >
                   <div className="flex items-center justify-end gap-2">
                     <span className="flex items-center gap-1 whitespace-nowrap">
-                      <span>Invested / Avg Cost (₨)</span>
-                      <span className="text-[10px] font-normal normal-case tracking-normal text-gray-600">%</span>
+                      Invested (₨)
                     </span>
                     {sortColumn === 'invested' && (
+                      sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('cost')}
+                  className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
+                >
+                  <div className="flex items-center justify-end gap-2">
+                    Avg Cost (₨)
+                    {sortColumn === 'cost' && (
+                      sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('allocation')}
+                  className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
+                >
+                  <div className="flex items-center justify-end gap-2">
+                    Weight %
+                    {sortColumn === 'allocation' && (
                       sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
                     )}
                   </div>
@@ -408,8 +429,19 @@ function AccountPage() {
                   className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
                 >
                   <div className="flex items-center justify-end gap-2">
-                    Value / Curr. Price (₨)
+                    Value (₨)
                     {sortColumn === 'value' && (
+                      sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('price')}
+                  className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
+                >
+                  <div className="flex items-center justify-end gap-2">
+                    Curr. Price (₨)
+                    {sortColumn === 'price' && (
                       sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
                     )}
                   </div>
@@ -419,11 +451,19 @@ function AccountPage() {
                   className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
                 >
                   <div className="flex items-center justify-end gap-2">
-                    <span className="flex items-center gap-1 whitespace-nowrap">
-                      <span>P&amp;L / Return</span>
-                      <span className="text-[10px] font-normal normal-case tracking-normal text-gray-600">₨ / %</span>
-                    </span>
+                    P&amp;L (₨)
                     {sortColumn === 'pl' && (
+                      sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                    )}
+                  </div>
+                </th>
+                <th
+                  onClick={() => handleSort('return')}
+                  className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
+                >
+                  <div className="flex items-center justify-end gap-2">
+                    Return %
+                    {sortColumn === 'return' && (
                       sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
                     )}
                   </div>
@@ -457,26 +497,22 @@ function AccountPage() {
                       {h.sector ?? '—'}
                     </td>
                     <td className="px-5 py-3 text-right text-gray-300">{h.shares.toLocaleString()}</td>
-                    <td className="px-5 py-3 text-right text-gray-300">
-                      <div className="flex flex-col items-end leading-tight">
-                        <span>{fmt(h.total_invested)}</span>
-                        <span className="text-sm text-gray-500">{fmt(h.cost_avg)}</span>
-                        <span className="text-xs text-gray-500">
-                          {allocationPct !== null ? `${allocationPct.toFixed(2)}%` : '—'}
-                        </span>
-                      </div>
+                    <td className="px-5 py-3 text-right text-gray-300">{fmt(h.total_invested)}</td>
+                    <td className="px-5 py-3 text-right text-gray-400">{fmt(h.cost_avg)}</td>
+                    <td className="px-5 py-3 text-right text-gray-500">
+                      {allocationPct !== null ? `${allocationPct.toFixed(2)}%` : '—'}
                     </td>
                     <td className="px-5 py-3 text-right text-gray-300">
-                      <div className="flex flex-col items-end leading-tight">
-                        <span>{currVal !== null ? fmt(currVal) : <span className="text-gray-600">—</span>}</span>
-                        <span className="text-sm text-gray-500">{h.latest_price !== null ? fmt(h.latest_price) : <span className="text-gray-600">—</span>}</span>
-                      </div>
+                      {currVal !== null ? fmt(currVal) : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="px-5 py-3 text-right text-gray-400">
+                      {h.latest_price !== null ? fmt(h.latest_price) : <span className="text-gray-600">—</span>}
                     </td>
                     <td className={`px-5 py-3 text-right font-medium ${g === true ? 'text-emerald-400' : g === false ? 'text-red-400' : 'text-gray-600'}`}>
-                      <div className="flex flex-col items-end leading-tight">
-                        <span>{pl !== null ? `${g ? '+' : ''}${fmt(pl)}` : '—'}</span>
-                        <span className="text-sm opacity-80">{plPct !== null ? `${g ? '+' : ''}${plPct.toFixed(2)}%` : '—'}</span>
-                      </div>
+                      {pl !== null ? `${g ? '+' : ''}${fmt(pl)}` : '—'}
+                    </td>
+                    <td className={`px-5 py-3 text-right font-medium ${g === true ? 'text-emerald-400' : g === false ? 'text-red-400' : 'text-gray-600'}`}>
+                      {plPct !== null ? `${g ? '+' : ''}${plPct.toFixed(2)}%` : '—'}
                     </td>
                     <td className="px-5 py-3 text-xs text-gray-500">
                       {updatedAt ?? <span className="text-gray-600">—</span>}
