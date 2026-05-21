@@ -4,6 +4,7 @@ import {
   serverAddTrade,
   serverEnsureSectors,
   serverGetAllAccounts,
+  serverGetDividends,
   serverGetHoldings,
   serverGetTransactions,
 } from '../serverFns'
@@ -12,6 +13,7 @@ import type { HoldingWithPrice } from '../db.server'
 import { transactionTotal, transactionTradeValue } from '../fees'
 import { AllocationDonut } from '../components/AllocationDonut'
 import { AccountTransactions, type TransactionRow } from '../components/AccountTransactions'
+import { AccountDividends } from '../components/AccountDividends'
 
 export const Route = createFileRoute('/account/$name')({
   loader: async ({ params }) => {
@@ -19,9 +21,10 @@ export const Route = createFileRoute('/account/$name')({
 
     const accounts = await serverGetAllAccounts()
     if (!accounts.includes(params.name)) throw notFound()
-    const [holdings, transactions] = await Promise.all([
+    const [holdings, transactions, dividendData] = await Promise.all([
       serverGetHoldings({ data: params.name }),
       serverGetTransactions({ data: params.name }),
+      serverGetDividends({ data: params.name }),
     ])
     const transactionRows: TransactionRow[] = transactions.map(t => ({
       ...t,
@@ -35,7 +38,13 @@ export const Route = createFileRoute('/account/$name')({
         t.cdc_charges,
       ),
     }))
-    return { holdings, transactions: transactionRows, account: params.name }
+    return {
+      holdings,
+      transactions: transactionRows,
+      dividends: dividendData.dividends,
+      dividendSummary: dividendData.summary,
+      account: params.name,
+    }
   },
   component: AccountPage,
 })
@@ -44,10 +53,10 @@ function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-type AccountTab = 'portfolio' | 'transactions'
+type AccountTab = 'portfolio' | 'transactions' | 'dividends'
 
 function AccountPage() {
-  const { holdings, transactions, account } = Route.useLoaderData()
+  const { holdings, transactions, dividends, dividendSummary, account } = Route.useLoaderData()
   const router = useRouter()
   const name = account.charAt(0).toUpperCase() + account.slice(1)
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
@@ -201,7 +210,8 @@ function AccountPage() {
       <div>
         <h1 className="text-2xl font-bold text-white">{name}'s Portfolio</h1>
         <p className="mt-1 text-sm text-gray-400">
-          {holdings.length} positions · {transactions.length} transactions
+          {holdings.length} positions · {transactions.length} transactions · {dividends.length}{' '}
+          dividends
         </p>
       </div>
 
@@ -215,10 +225,22 @@ function AccountPage() {
             {transactions.length}
           </span>
         </TabButton>
+        <TabButton active={activeTab === 'dividends'} onClick={() => setActiveTab('dividends')}>
+          Dividends
+          <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
+            {dividends.length}
+          </span>
+        </TabButton>
       </div>
 
       {activeTab === 'transactions' ? (
         <AccountTransactions transactions={transactions} />
+      ) : activeTab === 'dividends' ? (
+        <AccountDividends
+          account={account}
+          dividends={dividends}
+          summary={dividendSummary}
+        />
       ) : (
         <>
       {/* Portfolio overview: stats + allocation in one panel */}

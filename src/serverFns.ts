@@ -1,9 +1,14 @@
 import { createServerFn } from '@tanstack/react-start'
 import {
+  addDividend,
   addTrade,
   createAccount,
+  deleteDividend,
   getAllAccounts,
+  getAllDividendTotals,
   getAllSymbols,
+  getDividendSummary,
+  getDividends,
   getHoldings,
   getLatestPrices,
   getPortfolioValueHistory,
@@ -11,9 +16,11 @@ import {
   getSymbolsMissingSector,
   getTransactions,
   hasStockSector,
+  importDividends,
   storeSnapshot,
   upsertStockSector,
 } from './db.server'
+import { parseDividendPaste, parsePaymentDate } from './dividends'
 import { fetchAllPrices, fetchAndStoreSectors, fetchPsxQuote } from './psx.server'
 
 async function ensureMissingSectors(): Promise<{ fetched: number; failed: string[] }> {
@@ -157,3 +164,100 @@ export const serverFetchAndStorePrices = createServerFn({ method: 'POST' }).hand
 export const serverGetPortfolioHistory = createServerFn({ method: 'GET' }).handler(
   async () => getPortfolioValueHistory(),
 )
+
+export const serverGetDividends = createServerFn({ method: 'GET' })
+  .inputValidator((account: unknown) => String(account))
+  .handler(async ({ data }) => ({
+    dividends: getDividends(data),
+    summary: getDividendSummary(data),
+  }))
+
+export const serverGetAllDividendTotals = createServerFn({ method: 'GET' }).handler(
+  async () => getAllDividendTotals(),
+)
+
+export const serverAddDividend = createServerFn({ method: 'POST' })
+  .inputValidator((input: unknown) => {
+    const parsed = (input ?? {}) as Record<string, unknown>
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    const event_id = String(parsed.event_id ?? '').trim()
+    const symbol = String(parsed.symbol ?? '').trim().toUpperCase()
+    const security_name =
+      parsed.security_name != null && String(parsed.security_name).trim() !== ''
+        ? String(parsed.security_name).trim()
+        : null
+    const financial_year = String(parsed.financial_year ?? '').trim()
+    const gross_amount = Number(parsed.gross_amount)
+    const net_amount = Number(parsed.net_amount)
+    const status = String(parsed.status ?? 'paid').trim()
+    const payment_dateRaw = String(parsed.payment_date ?? '').trim()
+    const payment_date =
+      /^\d{4}-\d{2}-\d{2}$/.test(payment_dateRaw)
+        ? payment_dateRaw
+        : parsePaymentDate(payment_dateRaw) ?? ''
+
+    if (!account) throw new Error('Account is required')
+    if (!event_id) throw new Error('Event ID is required')
+    if (!symbol) throw new Error('Symbol is required')
+    if (!financial_year) throw new Error('Financial year is required')
+    if (!Number.isFinite(gross_amount) || gross_amount <= 0) {
+      throw new Error('Gross amount must be a positive number')
+    }
+    if (!Number.isFinite(net_amount) || net_amount <= 0) {
+      throw new Error('Net amount must be a positive number')
+    }
+    if (!payment_date) throw new Error('Payment date is required (DD/MM/YYYY or YYYY-MM-DD)')
+
+    return {
+      account,
+      event_id,
+      symbol,
+      security_name,
+      financial_year,
+      gross_amount,
+      net_amount,
+      status,
+      payment_date,
+    }
+  })
+  .handler(async ({ data }) => addDividend(data))
+
+export const serverImportDividends = createServerFn({ method: 'POST' })
+  .inputValidator((input: unknown) => {
+    const parsed = (input ?? {}) as { account?: unknown; text?: unknown }
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    const text = String(parsed.text ?? '').trim()
+    if (!account) throw new Error('Account is required')
+    if (!text) throw new Error('Paste text is required')
+    return { account, text }
+  })
+  .handler(async ({ data }) => {
+    const { rows, errors: parseErrors } = parseDividendPaste(data.text)
+    if (rows.length === 0) {
+      return {
+        inserted: 0,
+        skipped: 0,
+        errors: parseErrors.length > 0 ? parseErrors : ['No valid rows to import'],
+      }
+    }
+    const result = importDividends(data.account, rows)
+    return {
+      ...result,
+      errors: [...parseErrors, ...result.errors],
+    }
+  })
+
+export const serverDeleteDividend = createServerFn({ method: 'POST' })
+  .inputValidator((input: unknown) => {
+    const parsed = (input ?? {}) as { id?: unknown; account?: unknown }
+    const id = Number(parsed.id)
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid dividend id')
+    if (!account) throw new Error('Account is required')
+    return { id, account }
+  })
+  .handler(async ({ data }) => {
+    const ok = deleteDividend(data.id, data.account)
+    if (!ok) throw new Error('Dividend not found')
+    return { ok: true }
+  })

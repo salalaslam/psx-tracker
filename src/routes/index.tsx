@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { serverEnsureSectors, serverFetchAndStorePrices, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
+import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
 
@@ -16,12 +16,13 @@ export const Route = createFileRoute('/')({
     })
     await Promise.all(holdingsPromises)
     
-    const [prices, portfolioHistory] = await Promise.all([
+    const [prices, portfolioHistory, dividendTotals] = await Promise.all([
       serverGetLatestPrices(),
       serverGetPortfolioHistory(),
+      serverGetAllDividendTotals(),
     ])
     
-    return { accounts, holdings, prices, portfolioHistory }
+    return { accounts, holdings, prices, portfolioHistory, dividendTotals }
   },
   component: Dashboard,
 })
@@ -128,7 +129,7 @@ function Stat({
 }
 
 function Dashboard() {
-  const { accounts, holdings, portfolioHistory } = Route.useLoaderData()
+  const { accounts, holdings, portfolioHistory, dividendTotals } = Route.useLoaderData()
   const [fetching, setFetching] = useState(false)
   const [fetchResults, setFetchResults] = useState<FetchResult[] | null>(null)
   const router = useRouter()
@@ -231,7 +232,7 @@ function Dashboard() {
       {/* Combined summary */}
       <div className="rounded-xl border border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 p-6">
         <h2 className="mb-4 text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
-        <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
           <Stat label="Total Invested" value={`₨ ${fmt(combined.invested)}`} />
           <Stat
             label="Current Value"
@@ -246,6 +247,12 @@ function Dashboard() {
             label="Overall Return"
             value={combined.priced > 0 ? `${green ? '+' : ''}${combined.pct.toFixed(2)}%` : '—'}
             color={combined.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
+          />
+          <Stat
+            label="Net Dividends"
+            value={dividendTotals.count > 0 ? `₨ ${fmt(dividendTotals.total_net)}` : '—'}
+            sub={dividendTotals.count > 0 ? `${dividendTotals.count} events` : undefined}
+            color={dividendTotals.count > 0 ? 'text-emerald-400' : undefined}
           />
         </div>
       </div>

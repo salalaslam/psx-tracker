@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { resolveTradeFees } from './fees'
+import type { ParsedDividendRow } from './dividends'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.resolve(__dirname, '../../data/investments.db')
@@ -64,6 +65,24 @@ db.exec(`
     symbol  TEXT PRIMARY KEY,
     sector  TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS dividends (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account         TEXT    NOT NULL,
+    event_id        TEXT    NOT NULL,
+    symbol          TEXT    NOT NULL,
+    security_name   TEXT,
+    financial_year  TEXT    NOT NULL,
+    gross_amount    REAL    NOT NULL,
+    net_amount      REAL    NOT NULL,
+    status          TEXT    NOT NULL DEFAULT 'paid',
+    payment_date    TEXT    NOT NULL,
+    FOREIGN KEY(account) REFERENCES accounts(name),
+    UNIQUE(account, event_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_dividends_account_date
+    ON dividends(account, payment_date DESC);
 `)
 
 function migrateTransactionsFeeColumns(): void {
@@ -561,6 +580,196 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
   })
 
   return tx()
+}
+
+// ── Dividends ───────────────────────────────────────────────────────────────
+
+export interface Dividend {
+  id: number
+  account: string
+  event_id: string
+  symbol: string
+  security_name: string | null
+  financial_year: string
+  gross_amount: number
+  net_amount: number
+  status: string
+  payment_date: string
+}
+
+export interface DividendSummary {
+  count: number
+  total_gross: number
+  total_net: number
+}
+
+export interface AddDividendInput {
+  account: string
+  event_id: string
+  symbol: string
+  security_name?: string | null
+  financial_year: string
+  gross_amount: number
+  net_amount: number
+  status?: string
+  payment_date: string
+}
+
+export interface ImportDividendsResult {
+  inserted: number
+  skipped: number
+  errors: string[]
+}
+
+export function getDividends(account: string): Dividend[] {
+  return db.prepare(`
+    SELECT id, account, event_id, symbol, security_name, financial_year,
+           gross_amount, net_amount, status, payment_date
+    FROM dividends
+    WHERE account = ?
+    ORDER BY payment_date DESC, id DESC
+  `).all(account.trim().toLowerCase()) as Dividend[]
+}
+
+export function getDividendSummary(account: string): DividendSummary {
+  const row = db.prepare(`
+    SELECT COUNT(1) AS count,
+           COALESCE(SUM(gross_amount), 0) AS total_gross,
+           COALESCE(SUM(net_amount), 0) AS total_net
+    FROM dividends
+    WHERE account = ?
+  `).get(account.trim().toLowerCase()) as { count: number; total_gross: number; total_net: number }
+  return {
+    count: row.count,
+    total_gross: row.total_gross,
+    total_net: row.total_net,
+  }
+}
+
+export function getAllDividendTotals(): { total_net: number; count: number } {
+  const row = db.prepare(`
+    SELECT COUNT(1) AS count, COALESCE(SUM(net_amount), 0) AS total_net
+    FROM dividends
+  `).get() as { count: number; total_net: number }
+  return { count: row.count, total_net: row.total_net }
+}
+
+function validateDividendInput(input: AddDividendInput): string | null {
+  const account = input.account.trim().toLowerCase()
+  const event_id = input.event_id.trim()
+  const symbol = input.symbol.trim().toUpperCase()
+  const financial_year = input.financial_year.trim()
+
+  if (!account) return 'Account is required'
+  if (!event_id) return 'Event ID is required'
+  if (!symbol) return 'Symbol is required'
+  if (!financial_year) return 'Financial year is required'
+  if (!Number.isFinite(input.gross_amount) || input.gross_amount <= 0) {
+    return 'Gross amount must be a positive number'
+  }
+  if (!Number.isFinite(input.net_amount) || input.net_amount <= 0) {
+    return 'Net amount must be a positive number'
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.payment_date.trim())) {
+    return 'Payment date must be YYYY-MM-DD'
+  }
+
+  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)
+  if (!accountExists) return 'Account does not exist'
+
+  return null
+}
+
+export function addDividend(input: AddDividendInput): { ok: boolean; error?: string; id?: number } {
+  const err = validateDividendInput(input)
+  if (err) return { ok: false, error: err }
+
+  const account = input.account.trim().toLowerCase()
+  const event_id = input.event_id.trim()
+  const symbol = input.symbol.trim().toUpperCase()
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO dividends (
+        account, event_id, symbol, security_name, financial_year,
+        gross_amount, net_amount, status, payment_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      account,
+      event_id,
+      symbol,
+      input.security_name?.trim() || null,
+      input.financial_year.trim(),
+      input.gross_amount,
+      input.net_amount,
+      (input.status ?? 'paid').trim().toLowerCase() || 'paid',
+      input.payment_date.trim(),
+    )
+    return { ok: true, id: Number(result.lastInsertRowid) }
+  } catch {
+    return { ok: false, error: 'Duplicate event ID for this account' }
+  }
+}
+
+export function importDividends(
+  account: string,
+  rows: ParsedDividendRow[],
+): ImportDividendsResult {
+  const acct = account.trim().toLowerCase()
+  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(acct)
+  if (!accountExists) {
+    return { inserted: 0, skipped: 0, errors: ['Account does not exist'] }
+  }
+
+  const insert = db.prepare(`
+    INSERT INTO dividends (
+      account, event_id, symbol, security_name, financial_year,
+      gross_amount, net_amount, status, payment_date
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const exists = db.prepare(
+    'SELECT 1 FROM dividends WHERE account = ? AND event_id = ?',
+  )
+
+  const run = db.transaction(() => {
+    let inserted = 0
+    let skipped = 0
+    const errors: string[] = []
+
+    for (const row of rows) {
+      if (exists.get(acct, row.event_id)) {
+        skipped++
+        continue
+      }
+      try {
+        insert.run(
+          acct,
+          row.event_id,
+          row.symbol,
+          row.security_name,
+          row.financial_year,
+          row.gross_amount,
+          row.net_amount,
+          row.status,
+          row.payment_date,
+        )
+        inserted++
+      } catch {
+        errors.push(`Failed to insert ${row.event_id}`)
+      }
+    }
+
+    return { inserted, skipped, errors }
+  })
+
+  return run()
+}
+
+export function deleteDividend(id: number, account: string): boolean {
+  const result = db.prepare(
+    'DELETE FROM dividends WHERE id = ? AND account = ?',
+  ).run(id, account.trim().toLowerCase())
+  return result.changes > 0
 }
 
 export function getPortfolioValueHistory(): PortfolioValuePoint[] {
