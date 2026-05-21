@@ -77,6 +77,7 @@ db.exec(`
     net_amount      REAL    NOT NULL,
     status          TEXT    NOT NULL DEFAULT 'paid',
     payment_date    TEXT    NOT NULL,
+    shares          INTEGER,
     FOREIGN KEY(account) REFERENCES accounts(name),
     UNIQUE(account, event_id)
   );
@@ -95,7 +96,15 @@ function migrateTransactionsFeeColumns(): void {
   if (!cols.has('cdc_charges')) db.exec('ALTER TABLE transactions ADD COLUMN cdc_charges REAL')
 }
 
+function migrateDividendsSharesColumn(): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(dividends)').all() as { name: string }[]).map(c => c.name),
+  )
+  if (!cols.has('shares')) db.exec('ALTER TABLE dividends ADD COLUMN shares INTEGER')
+}
+
 migrateTransactionsFeeColumns()
+migrateDividendsSharesColumn()
 
 // ── Seed data (public-safe demo values) ─────────────────────────────────────
 
@@ -595,12 +604,15 @@ export interface Dividend {
   net_amount: number
   status: string
   payment_date: string
+  shares: number | null
 }
 
 export interface DividendSummary {
   count: number
   total_gross: number
   total_net: number
+  /** Sum of shares entitled across dividend events (CDC "No. of Securities"). */
+  total_shares: number | null
 }
 
 export interface AddDividendInput {
@@ -613,10 +625,12 @@ export interface AddDividendInput {
   net_amount: number
   status?: string
   payment_date: string
+  shares?: number | null
 }
 
 export interface ImportDividendsResult {
   inserted: number
+  updated: number
   skipped: number
   errors: string[]
 }
@@ -624,7 +638,7 @@ export interface ImportDividendsResult {
 export function getDividends(account: string): Dividend[] {
   return db.prepare(`
     SELECT id, account, event_id, symbol, security_name, financial_year,
-           gross_amount, net_amount, status, payment_date
+           gross_amount, net_amount, status, payment_date, shares
     FROM dividends
     WHERE account = ?
     ORDER BY payment_date DESC, id DESC
@@ -635,23 +649,78 @@ export function getDividendSummary(account: string): DividendSummary {
   const row = db.prepare(`
     SELECT COUNT(1) AS count,
            COALESCE(SUM(gross_amount), 0) AS total_gross,
-           COALESCE(SUM(net_amount), 0) AS total_net
+           COALESCE(SUM(net_amount), 0) AS total_net,
+           SUM(shares) AS total_shares
     FROM dividends
     WHERE account = ?
-  `).get(account.trim().toLowerCase()) as { count: number; total_gross: number; total_net: number }
+  `).get(account.trim().toLowerCase()) as {
+    count: number
+    total_gross: number
+    total_net: number
+    total_shares: number | null
+  }
   return {
     count: row.count,
     total_gross: row.total_gross,
     total_net: row.total_net,
+    total_shares: row.total_shares,
   }
 }
 
-export function getAllDividendTotals(): { total_net: number; count: number } {
-  const row = db.prepare(`
-    SELECT COUNT(1) AS count, COALESCE(SUM(net_amount), 0) AS total_net
+export interface DividendAccountTotals {
+  total_net: number
+  count: number
+  total_shares: number | null
+}
+
+export function getAllDividendTotals(): DividendAccountTotals & {
+  by_account: Record<string, DividendAccountTotals>
+  by_symbol: Record<string, DividendAccountTotals>
+} {
+  const accountRows = db.prepare(`
+    SELECT account,
+           COUNT(1) AS count,
+           COALESCE(SUM(net_amount), 0) AS total_net,
+           SUM(shares) AS total_shares
     FROM dividends
-  `).get() as { count: number; total_net: number }
-  return { count: row.count, total_net: row.total_net }
+    GROUP BY account
+  `).all() as { account: string; count: number; total_net: number; total_shares: number | null }[]
+
+  const symbolRows = db.prepare(`
+    SELECT symbol,
+           COUNT(1) AS count,
+           COALESCE(SUM(net_amount), 0) AS total_net,
+           SUM(shares) AS total_shares
+    FROM dividends
+    GROUP BY symbol
+  `).all() as { symbol: string; count: number; total_net: number; total_shares: number | null }[]
+
+  const by_account: Record<string, DividendAccountTotals> = {}
+  let total_net = 0
+  let count = 0
+  let total_shares: number | null = 0
+  for (const row of accountRows) {
+    by_account[row.account] = {
+      count: row.count,
+      total_net: row.total_net,
+      total_shares: row.total_shares,
+    }
+    total_net += row.total_net
+    count += row.count
+    if (row.total_shares != null) total_shares = (total_shares ?? 0) + row.total_shares
+  }
+  if (total_shares === 0) total_shares = null
+
+  const by_symbol: Record<string, DividendAccountTotals> = {}
+  for (const row of symbolRows) {
+    by_symbol[row.symbol] = {
+      count: row.count,
+      total_net: row.total_net,
+      total_shares: row.total_shares,
+    }
+  }
+
+  return { count, total_net, total_shares, by_account, by_symbol }
 }
 
 function validateDividendInput(input: AddDividendInput): string | null {
@@ -673,6 +742,12 @@ function validateDividendInput(input: AddDividendInput): string | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.payment_date.trim())) {
     return 'Payment date must be YYYY-MM-DD'
   }
+  if (input.shares != null) {
+    const shares = Math.trunc(input.shares)
+    if (!Number.isInteger(shares) || shares <= 0) {
+      return 'Shares must be a positive integer'
+    }
+  }
 
   const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)
   if (!accountExists) return 'Account does not exist'
@@ -689,11 +764,15 @@ export function addDividend(input: AddDividendInput): { ok: boolean; error?: str
   const symbol = input.symbol.trim().toUpperCase()
 
   try {
+    const shares =
+      input.shares != null && Number.isFinite(input.shares)
+        ? Math.trunc(input.shares)
+        : null
     const result = db.prepare(`
       INSERT INTO dividends (
         account, event_id, symbol, security_name, financial_year,
-        gross_amount, net_amount, status, payment_date
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        gross_amount, net_amount, status, payment_date, shares
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       account,
       event_id,
@@ -704,6 +783,7 @@ export function addDividend(input: AddDividendInput): { ok: boolean; error?: str
       input.net_amount,
       (input.status ?? 'paid').trim().toLowerCase() || 'paid',
       input.payment_date.trim(),
+      shares,
     )
     return { ok: true, id: Number(result.lastInsertRowid) }
   } catch {
@@ -718,48 +798,101 @@ export function importDividends(
   const acct = account.trim().toLowerCase()
   const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(acct)
   if (!accountExists) {
-    return { inserted: 0, skipped: 0, errors: ['Account does not exist'] }
+    return { inserted: 0, updated: 0, skipped: 0, errors: ['Account does not exist'] }
   }
 
-  const insert = db.prepare(`
+  const upsert = db.prepare(`
     INSERT INTO dividends (
       account, event_id, symbol, security_name, financial_year,
-      gross_amount, net_amount, status, payment_date
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      gross_amount, net_amount, status, payment_date, shares
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account, event_id) DO UPDATE SET
+      symbol = excluded.symbol,
+      security_name = COALESCE(excluded.security_name, security_name),
+      financial_year = excluded.financial_year,
+      gross_amount = excluded.gross_amount,
+      net_amount = excluded.net_amount,
+      status = excluded.status,
+      payment_date = excluded.payment_date,
+      shares = COALESCE(excluded.shares, shares)
   `)
-  const exists = db.prepare(
-    'SELECT 1 FROM dividends WHERE account = ? AND event_id = ?',
-  )
+  const updateByMatch = db.prepare(`
+    UPDATE dividends SET shares = ?
+    WHERE account = ? AND symbol = ? AND payment_date = ?
+      AND ABS(net_amount - ?) < 0.01
+      AND (shares IS NULL OR shares != ?)
+  `)
+  const findByMatch = db.prepare(`
+    SELECT id FROM dividends
+    WHERE account = ? AND symbol = ? AND payment_date = ?
+      AND ABS(net_amount - ?) < 0.01
+    LIMIT 1
+  `)
 
   const run = db.transaction(() => {
     let inserted = 0
+    let updated = 0
     let skipped = 0
     const errors: string[] = []
 
     for (const row of rows) {
-      if (exists.get(acct, row.event_id)) {
+      const shares =
+        row.shares != null && Number.isFinite(row.shares) ? Math.trunc(row.shares) : null
+
+      if (row.event_id) {
+        const before = db.prepare(
+          'SELECT id FROM dividends WHERE account = ? AND event_id = ?',
+        ).get(acct, row.event_id)
+        try {
+          upsert.run(
+            acct,
+            row.event_id,
+            row.symbol,
+            row.security_name,
+            row.financial_year,
+            row.gross_amount,
+            row.net_amount,
+            row.status,
+            row.payment_date,
+            shares,
+          )
+          if (before) updated++
+          else inserted++
+        } catch {
+          errors.push(`Failed to upsert ${row.event_id}`)
+        }
+        continue
+      }
+
+      if (!row.symbol || !row.payment_date || row.net_amount == null) {
+        errors.push(`Line skipped: need symbol, payment date, and net amount to match`)
+        continue
+      }
+
+      const match = findByMatch.get(acct, row.symbol, row.payment_date, row.net_amount) as
+        | { id: number }
+        | undefined
+      if (!match) {
         skipped++
         continue
       }
-      try {
-        insert.run(
-          acct,
-          row.event_id,
-          row.symbol,
-          row.security_name,
-          row.financial_year,
-          row.gross_amount,
-          row.net_amount,
-          row.status,
-          row.payment_date,
-        )
-        inserted++
-      } catch {
-        errors.push(`Failed to insert ${row.event_id}`)
+      if (shares == null) {
+        skipped++
+        continue
       }
+      const result = updateByMatch.run(
+        shares,
+        acct,
+        row.symbol,
+        row.payment_date,
+        row.net_amount,
+        shares,
+      )
+      if (result.changes > 0) updated++
+      else skipped++
     }
 
-    return { inserted, skipped, errors }
+    return { inserted, updated, skipped, errors }
   })
 
   return run()

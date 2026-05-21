@@ -240,6 +240,7 @@ function AccountPage() {
           account={account}
           dividends={dividends}
           summary={dividendSummary}
+          holdings={holdings}
         />
       ) : (
         <>

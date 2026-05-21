@@ -1,5 +1,5 @@
 export interface ParsedDividendRow {
-  event_id: string
+  event_id?: string
   symbol: string
   security_name: string | null
   financial_year: string
@@ -7,11 +7,13 @@ export interface ParsedDividendRow {
   net_amount: number
   status: string
   payment_date: string
+  shares?: number | null
 }
 
 export interface ParseDividendPasteResult {
   rows: ParsedDividendRow[]
   errors: string[]
+  format: 'payment_history' | 'summary_report'
 }
 
 export function parseAmount(raw: string): number | null {
@@ -19,6 +21,13 @@ export function parseAmount(raw: string): number | null {
   if (!cleaned) return null
   const n = Number(cleaned)
   return Number.isFinite(n) && n >= 0 ? n : null
+}
+
+export function parseInteger(raw: string): number | null {
+  const cleaned = raw.trim().replace(/,/g, '')
+  if (!cleaned) return null
+  const n = Number(cleaned)
+  return Number.isInteger(n) && n > 0 ? n : null
 }
 
 export function parsePaymentDate(raw: string): string | null {
@@ -45,7 +54,50 @@ export function normalizeStatus(raw: string): string {
   return raw.trim().toLowerCase() || 'paid'
 }
 
-const HEADER_ALIASES: Record<string, keyof ParsedDividendRow | 'skip'> = {
+/** Net dividend per share from CDC entitlement (net ÷ shares at payment). */
+export function dividendPerShare(netAmount: number, shares: number | null | undefined): number | null {
+  if (shares == null || shares <= 0 || !Number.isFinite(netAmount)) return null
+  return netAmount / shares
+}
+
+/**
+ * Cash dividend yield on cost: (DPS from payments) ÷ average cost per share.
+ * Falls back to total net ÷ invested when share counts are missing.
+ */
+export function calcDividendYieldOnCost(params: {
+  totalNet: number
+  totalDividendShares: number | null | undefined
+  invested: number
+  holdingShares: number
+  eventCount: number
+}): number | null {
+  const { totalNet, totalDividendShares, invested, holdingShares, eventCount } = params
+  if (eventCount === 0 || invested <= 0 || holdingShares <= 0) return null
+
+  if (totalDividendShares != null && totalDividendShares > 0) {
+    const dps = totalNet / totalDividendShares
+    const costAvg = invested / holdingShares
+    if (costAvg <= 0) return null
+    return (dps / costAvg) * 100
+  }
+
+  return (totalNet / invested) * 100
+}
+
+export function parseSymbolAndName(raw: string): { symbol: string; security_name: string | null } {
+  const s = raw.trim()
+  const dash = s.indexOf(' - ')
+  if (dash > 0) {
+    return {
+      symbol: s.slice(0, dash).trim().toUpperCase(),
+      security_name: s.slice(dash + 3).trim() || null,
+    }
+  }
+  const token = s.split(/\s+/)[0]?.toUpperCase() ?? ''
+  return { symbol: token, security_name: s || null }
+}
+
+const PAYMENT_HEADER_ALIASES: Record<string, keyof ParsedDividendRow | 'skip'> = {
   'event id': 'event_id',
   event_id: 'event_id',
   'security symbol': 'symbol',
@@ -68,6 +120,30 @@ const HEADER_ALIASES: Record<string, keyof ParsedDividendRow | 'skip'> = {
   'payment date': 'payment_date',
   payment_date: 'payment_date',
   date: 'payment_date',
+  shares: 'shares',
+  'no. of securities': 'shares',
+  'no of securities': 'shares',
+  securities: 'shares',
+}
+
+const SUMMARY_HEADER_ALIASES: Record<string, keyof ParsedDividendRow | 'skip'> = {
+  'payment date': 'payment_date',
+  'dividend issue date': 'skip',
+  'sec. symbol - sec. name': 'symbol',
+  'sec symbol - sec name': 'symbol',
+  'security symbol': 'symbol',
+  'filer status': 'skip',
+  'filer status*': 'skip',
+  'no. of securities': 'shares',
+  'no of securities': 'shares',
+  'gross dividend': 'gross_amount',
+  gross: 'gross_amount',
+  'deductions: tax': 'skip',
+  tax: 'skip',
+  'deductions: zakat': 'skip',
+  zakat: 'skip',
+  'net dividend': 'net_amount',
+  net: 'net_amount',
 }
 
 function splitLine(line: string): string[] {
@@ -75,25 +151,22 @@ function splitLine(line: string): string[] {
   return line.split(',').map(c => c.trim())
 }
 
-function mapHeader(cells: string[]): (keyof ParsedDividendRow)[] | null {
-  const mapped = cells.map(c => {
-    const key = HEADER_ALIASES[c.trim().toLowerCase()]
-    return key === 'skip' || key == null ? null : key
-  })
-  const required: (keyof ParsedDividendRow)[] = [
-    'event_id',
-    'symbol',
-    'financial_year',
-    'gross_amount',
-    'net_amount',
-    'status',
-    'payment_date',
-  ]
-  if (required.every(k => mapped.includes(k))) return mapped as (keyof ParsedDividendRow)[]
-  return null
+function isSummaryHeader(cells: string[]): boolean {
+  const lower = cells.map(c => c.toLowerCase())
+  return lower.some(c => c.includes('no. of securities') || c.includes('no of securities'))
 }
 
-const POSITIONAL_KEYS: (keyof ParsedDividendRow)[] = [
+function mapHeader(
+  cells: string[],
+  aliases: Record<string, keyof ParsedDividendRow | 'skip'>,
+): (keyof ParsedDividendRow | null)[] {
+  return cells.map(c => {
+    const key = aliases[c.trim().toLowerCase()]
+    return key === 'skip' || key == null ? null : key
+  })
+}
+
+const PAYMENT_POSITIONAL: (keyof ParsedDividendRow)[] = [
   'event_id',
   'symbol',
   'security_name',
@@ -104,34 +177,77 @@ const POSITIONAL_KEYS: (keyof ParsedDividendRow)[] = [
   'payment_date',
 ]
 
-function parseRowCells(cells: string[], columnMap: (keyof ParsedDividendRow)[]): ParsedDividendRow | null {
+function parsePaymentRow(
+  cells: string[],
+  columnMap: (keyof ParsedDividendRow | null)[],
+): ParsedDividendRow | null {
   const raw: Partial<Record<keyof ParsedDividendRow, string>> = {}
   for (let i = 0; i < columnMap.length && i < cells.length; i++) {
     const key = columnMap[i]
     if (key) raw[key] = cells[i]
   }
 
-  const event_id = (raw.event_id ?? '').trim()
-  const symbol = (raw.symbol ?? '').trim().toUpperCase()
+  const event_id = (raw.event_id ?? '').trim() || undefined
+  let symbol = (raw.symbol ?? '').trim().toUpperCase()
+  let security_name = (raw.security_name ?? '').trim() || null
+  if (!symbol && raw.symbol) {
+    const parsed = parseSymbolAndName(raw.symbol)
+    symbol = parsed.symbol
+    security_name = parsed.security_name
+  }
   const financial_year = (raw.financial_year ?? '').trim()
   const gross = parseAmount(raw.gross_amount ?? '')
   const net = parseAmount(raw.net_amount ?? '')
   const payment_date = parsePaymentDate(raw.payment_date ?? '')
+  const sharesRaw = raw.shares != null ? parseInteger(raw.shares) : null
 
-  if (!event_id || !symbol || !financial_year || gross == null || net == null || !payment_date) {
-    return null
-  }
+  if (!symbol || gross == null || net == null || !payment_date) return null
+  if (!event_id && !financial_year) return null
 
   return {
-    event_id,
+    ...(event_id ? { event_id } : {}),
     symbol,
-    security_name: (raw.security_name ?? '').trim() || null,
+    security_name,
     financial_year,
     gross_amount: gross,
     net_amount: net,
     status: normalizeStatus(raw.status ?? 'paid'),
     payment_date,
+    shares: sharesRaw,
   }
+}
+
+function parseSummaryRow(cells: string[], columnMap: (keyof ParsedDividendRow | null)[]): ParsedDividendRow | null {
+  const raw: Partial<Record<keyof ParsedDividendRow, string>> = {}
+  for (let i = 0; i < columnMap.length && i < cells.length; i++) {
+    const key = columnMap[i]
+    if (key) raw[key] = cells[i]
+  }
+
+  const payment_date = parsePaymentDate(raw.payment_date ?? '')
+  const gross = parseAmount(raw.gross_amount ?? '')
+  const net = parseAmount(raw.net_amount ?? '')
+  const shares = raw.shares != null ? parseInteger(raw.shares) : null
+  const secRaw = raw.symbol ?? ''
+  const { symbol, security_name } = parseSymbolAndName(secRaw)
+
+  if (!symbol || !payment_date || gross == null || net == null) return null
+
+  return {
+    symbol,
+    security_name,
+    financial_year: '',
+    gross_amount: gross,
+    net_amount: net,
+    status: 'paid',
+    payment_date,
+    shares,
+  }
+}
+
+function isTotalRow(cells: string[]): boolean {
+  const joined = cells.join(' ').toLowerCase()
+  return joined.includes('total') && !cells.some(c => /^[A-Z]{2,}/.test(c))
 }
 
 export function parseDividendPaste(text: string): ParseDividendPasteResult {
@@ -141,29 +257,44 @@ export function parseDividendPaste(text: string): ParseDividendPasteResult {
     .filter(l => l.length > 0)
 
   if (lines.length === 0) {
-    return { rows: [], errors: ['No data to parse'] }
+    return { rows: [], errors: ['No data to parse'], format: 'payment_history' }
   }
 
   const errors: string[] = []
   const rows: ParsedDividendRow[] = []
-  let start = 0
-  let columnMap: (keyof ParsedDividendRow)[] = POSITIONAL_KEYS
-
   const firstCells = splitLine(lines[0])
-  const headerMap = mapHeader(firstCells)
-  if (headerMap) {
-    columnMap = headerMap
+  const summaryFormat = isSummaryHeader(firstCells)
+  const format: ParseDividendPasteResult['format'] = summaryFormat ? 'summary_report' : 'payment_history'
+
+  let start = 0
+  let columnMap: (keyof ParsedDividendRow | null)[]
+
+  if (summaryFormat) {
+    columnMap = mapHeader(firstCells, SUMMARY_HEADER_ALIASES)
     start = 1
+  } else {
+    const headerMap = mapHeader(firstCells, PAYMENT_HEADER_ALIASES)
+    const hasHeader = headerMap.some(k => k != null)
+    columnMap = hasHeader
+      ? headerMap
+      : PAYMENT_POSITIONAL.map(k => k as keyof ParsedDividendRow | null)
+    if (hasHeader) start = 1
   }
 
   for (let i = start; i < lines.length; i++) {
     const cells = splitLine(lines[i])
-    if (cells.every(c => !c)) continue
+    if (cells.every(c => !c) || isTotalRow(cells)) continue
 
-    const row = parseRowCells(cells, columnMap)
+    const row = summaryFormat
+      ? parseSummaryRow(cells, columnMap)
+      : parsePaymentRow(cells, columnMap)
+
     if (!row) {
       errors.push(`Line ${i + 1}: could not parse row (${cells.slice(0, 3).join(' | ')}…)`)
       continue
+    }
+    if (summaryFormat && !row.financial_year) {
+      row.financial_year = '—'
     }
     rows.push(row)
   }
@@ -172,5 +303,5 @@ export function parseDividendPaste(text: string): ParseDividendPasteResult {
     errors.push('No valid dividend rows found')
   }
 
-  return { rows, errors }
+  return { rows, errors, format }
 }

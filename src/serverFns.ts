@@ -208,6 +208,10 @@ export const serverAddDividend = createServerFn({ method: 'POST' })
     }
     if (!payment_date) throw new Error('Payment date is required (DD/MM/YYYY or YYYY-MM-DD)')
 
+    const sharesRaw = parsed.shares
+    const shares =
+      sharesRaw != null && String(sharesRaw).trim() !== '' ? Number(sharesRaw) : null
+
     return {
       account,
       event_id,
@@ -218,6 +222,7 @@ export const serverAddDividend = createServerFn({ method: 'POST' })
       net_amount,
       status,
       payment_date,
+      ...(shares != null && Number.isFinite(shares) ? { shares } : {}),
     }
   })
   .handler(async ({ data }) => addDividend(data))
@@ -236,6 +241,7 @@ export const serverImportDividends = createServerFn({ method: 'POST' })
     if (rows.length === 0) {
       return {
         inserted: 0,
+        updated: 0,
         skipped: 0,
         errors: parseErrors.length > 0 ? parseErrors : ['No valid rows to import'],
       }

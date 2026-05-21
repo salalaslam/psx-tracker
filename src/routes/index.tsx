@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
+import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 
 export const Route = createFileRoute('/')({
   loader: async () => {
@@ -66,13 +67,28 @@ function SummaryCard({
   label,
   account,
   holdings,
+  dividendNet,
+  dividendCount,
+  dividendShares,
 }: {
   label: string
   account: string
   holdings: HoldingWithPrice[]
+  dividendNet: number
+  dividendCount: number
+  dividendShares: number | null
 }) {
   const s = calcSummary(holdings)
+  const holdingShares = holdings.reduce((sum, h) => sum + h.shares, 0)
   const green = s.gainLoss >= 0
+  const dividendYield = calcDividendYieldOnCost({
+    totalNet: dividendNet,
+    totalDividendShares: dividendShares,
+    invested: s.invested,
+    holdingShares,
+    eventCount: dividendCount,
+  })
+  const dps = dividendPerShare(dividendNet, dividendShares)
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -101,6 +117,24 @@ function SummaryCard({
           label="Return"
           value={s.priced > 0 ? `${green ? '+' : ''}${s.pct.toFixed(2)}%` : '—'}
           color={s.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
+        />
+        <Stat
+          label="Net Dividends"
+          value={dividendCount > 0 ? `₨ ${fmt(dividendNet)}` : '—'}
+          sub={dividendCount > 0 ? `${dividendCount} events` : undefined}
+          color={dividendCount > 0 ? 'text-emerald-400' : undefined}
+        />
+        <Stat
+          label="Dividend Yield"
+          value={dividendYield !== null ? `${dividendYield.toFixed(2)}%` : '—'}
+          sub={
+            dps != null
+              ? `₨ ${dps.toFixed(2)}/sh on cost`
+              : dividendYield !== null
+                ? 'on cost basis'
+                : undefined
+          }
+          color={dividendYield !== null ? 'text-emerald-400' : undefined}
         />
       </div>
       <p className="mt-3 text-xs text-gray-500">{s.total} positions</p>
@@ -156,6 +190,17 @@ function Dashboard() {
   )
   combined.pct = combined.invested > 0 ? (combined.gainLoss / combined.invested) * 100 : 0
 
+  const allHoldings = Object.values(holdings).flat()
+  const combinedHoldingShares = allHoldings.reduce((sum, h) => sum + h.shares, 0)
+  const combinedDividendYield = calcDividendYieldOnCost({
+    totalNet: dividendTotals.total_net,
+    totalDividendShares: dividendTotals.total_shares,
+    invested: combined.invested,
+    holdingShares: combinedHoldingShares,
+    eventCount: dividendTotals.count,
+  })
+  const combinedDps = dividendPerShare(dividendTotals.total_net, dividendTotals.total_shares)
+
   async function handleFetch() {
     setFetching(true)
     setFetchResults(null)
@@ -172,9 +217,6 @@ function Dashboard() {
   const successCount = fetchResults?.filter(r => r.stored).length ?? 0
   const failCount = fetchResults?.filter(r => !r.stored).length ?? 0
   const green = combined.gainLoss >= 0
-
-  // Merge all holdings for TopMovers
-  const allHoldings = Object.values(holdings).flat()
 
   return (
     <div className="space-y-8">
@@ -232,7 +274,7 @@ function Dashboard() {
       {/* Combined summary */}
       <div className="rounded-xl border border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 p-6">
         <h2 className="mb-4 text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
-        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Total Invested" value={`₨ ${fmt(combined.invested)}`} />
           <Stat
             label="Current Value"
@@ -254,26 +296,48 @@ function Dashboard() {
             sub={dividendTotals.count > 0 ? `${dividendTotals.count} events` : undefined}
             color={dividendTotals.count > 0 ? 'text-emerald-400' : undefined}
           />
+          <Stat
+            label="Dividend Yield"
+            value={combinedDividendYield !== null ? `${combinedDividendYield.toFixed(2)}%` : '—'}
+            sub={
+              combinedDps != null
+                ? `₨ ${combinedDps.toFixed(2)}/sh on cost`
+                : combinedDividendYield !== null
+                  ? 'on cost basis'
+                  : undefined
+            }
+            color={combinedDividendYield !== null ? 'text-emerald-400' : undefined}
+          />
         </div>
       </div>
 
       {/* Per-account cards */}
       <div className={`grid gap-6 ${accounts.length === 1 ? '' : accounts.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3 lg:grid-cols-4'}`}>
-        {accounts.map(account => (
-          <SummaryCard
-            key={account}
-            label={`${account.charAt(0).toUpperCase() + account.slice(1)}'s Portfolio`}
-            account={account}
-            holdings={holdings[account] || []}
-          />
-        ))}
+        {accounts.map(account => {
+          const div = dividendTotals.by_account[account] ?? {
+            total_net: 0,
+            count: 0,
+            total_shares: null,
+          }
+          return (
+            <SummaryCard
+              key={account}
+              label={`${account.charAt(0).toUpperCase() + account.slice(1)}'s Portfolio`}
+              account={account}
+              holdings={holdings[account] || []}
+              dividendNet={div.total_net}
+              dividendCount={div.count}
+              dividendShares={div.total_shares}
+            />
+          )
+        })}
       </div>
 
       {/* Portfolio value chart */}
       <PortfolioChart data={portfolioHistory} />
 
       {/* Holdings overview (all accounts combined, by current P&L) */}
-      <TopMovers holdings={allHoldings} />
+      <TopMovers holdings={allHoldings} dividendBySymbol={dividendTotals.by_symbol} />
     </div>
   )
 }
@@ -418,9 +482,15 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   )
 }
 
-type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct'
+type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield'
 
-function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
+function TopMovers({
+  holdings,
+  dividendBySymbol,
+}: {
+  holdings: HoldingWithPrice[]
+  dividendBySymbol: Record<string, { total_net: number; count: number }>
+}) {
   const [sortCol, setSortCol] = useState<SortCol>('gainLoss')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
@@ -458,7 +528,30 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
   for (const h of holdings) addHolding(h)
 
   const rows = [...map.values()]
-    .map(r => ({ ...r, gainLoss: r.current - r.invested, pct: ((r.current - r.invested) / r.invested) * 100 }))
+    .map(r => {
+      const div = dividendBySymbol[r.symbol]
+      const dividendNet = div?.total_net ?? 0
+      const dividendCount = div?.count ?? 0
+      const dividendShares = div?.total_shares ?? null
+      const divYield = calcDividendYieldOnCost({
+        totalNet: dividendNet,
+        totalDividendShares: dividendShares,
+        invested: r.invested,
+        holdingShares: r.shares,
+        eventCount: dividendCount,
+      })
+      const dps = dividendPerShare(dividendNet, dividendShares)
+      return {
+        ...r,
+        gainLoss: r.current - r.invested,
+        pct: ((r.current - r.invested) / r.invested) * 100,
+        dividendNet,
+        dividendCount,
+        dividendShares,
+        divYield,
+        dps,
+      }
+    })
     .sort((a, b) => {
       let cmp = 0
       if (sortCol === 'symbol') cmp = a.symbol.localeCompare(b.symbol)
@@ -468,6 +561,11 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
       else if (sortCol === 'current') cmp = a.current - b.current
       else if (sortCol === 'gainLoss') cmp = a.gainLoss - b.gainLoss
       else if (sortCol === 'pct') cmp = a.pct - b.pct
+      else if (sortCol === 'divYield') {
+        const av = a.divYield ?? -1
+        const bv = b.divYield ?? -1
+        cmp = av - bv
+      }
       return sortDir === 'desc' ? -cmp : cmp
     })
 
@@ -494,6 +592,7 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
                 { col: 'current' as SortCol, label: 'Current (₨)', align: 'right' },
                 { col: 'gainLoss' as SortCol, label: 'P&L (₨)', align: 'right' },
                 { col: 'pct' as SortCol, label: 'Return', align: 'right' },
+                { col: 'divYield' as SortCol, label: 'Div. Yield', align: 'right' },
               ] as const).map(({ col, label, align }) => (
                 <th
                   key={col}
@@ -551,6 +650,20 @@ function TopMovers({ holdings }: { holdings: HoldingWithPrice[] }) {
                   </td>
                   <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
                     {g ? '+' : ''}{r.pct.toFixed(2)}%
+                  </td>
+                  <td className="px-6 py-3 text-right">
+                    {r.divYield !== null ? (
+                      <div>
+                        <span className="font-medium text-emerald-400">{r.divYield.toFixed(2)}%</span>
+                        <p className="text-xs text-gray-500">
+                          {r.dps != null
+                            ? `₨ ${r.dps.toFixed(2)}/sh`
+                            : `₨ ${fmt(r.dividendNet)}`}
+                        </p>
+                      </div>
+                    ) : (
+                      <span className="text-gray-500">—</span>
+                    )}
                   </td>
                 </tr>
               )

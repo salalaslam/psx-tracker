@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useRouter } from '@tanstack/react-router'
-import type { Dividend, DividendSummary } from '../db.server'
+import type { Dividend, DividendSummary, HoldingWithPrice } from '../db.server'
+import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 import {
   serverAddDividend,
   serverDeleteDividend,
@@ -17,8 +18,10 @@ type SortKey =
   | 'symbol'
   | 'security_name'
   | 'financial_year'
+  | 'shares'
   | 'gross_amount'
   | 'net_amount'
+  | 'divYield'
   | 'status'
   | 'payment_date'
 
@@ -26,11 +29,25 @@ export function AccountDividends({
   account,
   dividends,
   summary,
+  holdings,
 }: {
   account: string
   dividends: Dividend[]
   summary: DividendSummary
+  holdings: HoldingWithPrice[]
 }) {
+  const costBySymbol = Object.fromEntries(
+    holdings.map(h => [h.symbol, h.total_invested / h.shares]),
+  )
+  const holdingShares = holdings.reduce((sum, h) => sum + h.shares, 0)
+  const accountDivYield = calcDividendYieldOnCost({
+    totalNet: summary.total_net,
+    totalDividendShares: summary.total_shares,
+    invested: holdings.reduce((sum, h) => sum + h.total_invested, 0),
+    holdingShares,
+    eventCount: summary.count,
+  })
+  const accountDps = dividendPerShare(summary.total_net, summary.total_shares)
   const router = useRouter()
   const [sortColumn, setSortColumn] = useState<SortKey | null>('payment_date')
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc')
@@ -48,10 +65,12 @@ export function AccountDividends({
   const [netAmount, setNetAmount] = useState('')
   const [status, setStatus] = useState('paid')
   const [paymentDate, setPaymentDate] = useState('')
+  const [shares, setShares] = useState('')
 
   const [importText, setImportText] = useState('')
   const [importPreview, setImportPreview] = useState<{
     count: number
+    format: string
     errors: string[]
   } | null>(null)
 
@@ -64,11 +83,23 @@ export function AccountDividends({
     }
   }
 
+  const rowYield = (d: Dividend) => {
+    const dps = dividendPerShare(d.net_amount, d.shares)
+    const cost = costBySymbol[d.symbol]
+    if (dps == null || cost == null || cost <= 0) return null
+    return (dps / cost) * 100
+  }
+
   const sorted = [...dividends].sort((a, b) => {
     if (!sortColumn) return 0
     const dir = sortDirection === 'asc' ? 1 : -1
-    const av = a[sortColumn] ?? ''
-    const bv = b[sortColumn] ?? ''
+    if (sortColumn === 'divYield') {
+      return ((rowYield(a) ?? -1) - (rowYield(b) ?? -1)) * dir
+    }
+    const av =
+      sortColumn === 'shares' ? (a.shares ?? -1) : (a[sortColumn] ?? '')
+    const bv =
+      sortColumn === 'shares' ? (b.shares ?? -1) : (b[sortColumn] ?? '')
     if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
     return String(av).localeCompare(String(bv)) * dir
   })
@@ -95,6 +126,7 @@ export function AccountDividends({
           net_amount: Number(netAmount),
           status,
           payment_date: paymentDate,
+          ...(shares.trim() ? { shares: Number(shares) } : {}),
         },
       })
       if (!result.ok) {
@@ -109,6 +141,7 @@ export function AccountDividends({
       setGrossAmount('')
       setNetAmount('')
       setPaymentDate('')
+      setShares('')
       await router.invalidate()
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Could not add dividend')
@@ -118,8 +151,12 @@ export function AccountDividends({
   }
 
   function handlePreviewImport() {
-    const { rows, errors } = parseDividendPaste(importText)
-    setImportPreview({ count: rows.length, errors })
+    const { rows, errors, format } = parseDividendPaste(importText)
+    setImportPreview({
+      count: rows.length,
+      format: format === 'summary_report' ? 'CDC summary (shares)' : 'payment history',
+      errors,
+    })
   }
 
   async function handleConfirmImport() {
@@ -128,7 +165,8 @@ export function AccountDividends({
     setFormSuccess(null)
     try {
       const result = await serverImportDividends({ data: { account, text: importText } })
-      const msg = `Imported ${result.inserted}, skipped ${result.skipped} duplicate(s)`
+      const parts = [`${result.inserted} new`, `${result.updated} updated`, `${result.skipped} skipped`]
+      const msg = `Import: ${parts.join(', ')}`
       if (result.errors.length > 0) {
         setFormError(`${msg}. ${result.errors.slice(0, 3).join('; ')}`)
       } else {
@@ -161,7 +199,7 @@ export function AccountDividends({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
           <p className="text-xs uppercase tracking-wide text-gray-500">Total Net Received</p>
           <p className="mt-1 text-xl font-bold text-emerald-400">₨ {fmt(summary.total_net)}</p>
@@ -173,6 +211,15 @@ export function AccountDividends({
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
           <p className="text-xs uppercase tracking-wide text-gray-500">Dividend Events</p>
           <p className="mt-1 text-xl font-bold text-white">{summary.count}</p>
+        </div>
+        <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
+          <p className="text-xs uppercase tracking-wide text-gray-500">Dividend Yield</p>
+          <p className="mt-1 text-xl font-bold text-emerald-400">
+            {accountDivYield !== null ? `${accountDivYield.toFixed(2)}%` : '—'}
+          </p>
+          {accountDps != null && (
+            <p className="mt-0.5 text-xs text-gray-500">₨ {accountDps.toFixed(2)}/sh on cost</p>
+          )}
         </div>
       </div>
 
@@ -304,6 +351,19 @@ export function AccountDividends({
                   disabled={saving}
                 />
               </label>
+              <label>
+                <span className="mb-1 block text-xs text-gray-500">Shares held</span>
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={shares}
+                  onChange={e => setShares(e.target.value)}
+                  placeholder="e.g. 89"
+                  className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm"
+                  disabled={saving}
+                />
+              </label>
             </div>
             <button
               type="submit"
@@ -322,8 +382,8 @@ export function AccountDividends({
             Bulk import (CDC paste)
           </h2>
           <p className="text-xs text-gray-500">
-            Copy the dividend table from CDC and paste below. Tab-separated rows work best.
-            Duplicate event IDs for this account are skipped.
+            Paste CDC payment history or the dividend summary report (with shares held).
+            Summary rows match existing dividends by symbol, date, and net amount.
           </p>
           <textarea
             value={importText}
@@ -358,7 +418,7 @@ export function AccountDividends({
           </div>
           {importPreview && (
             <div className="text-sm text-gray-400">
-              {importPreview.count} row(s) ready to import.
+              {importPreview.count} row(s) ready ({importPreview.format}).
               {importPreview.errors.length > 0 && (
                 <ul className="mt-2 list-disc pl-5 text-red-400">
                   {importPreview.errors.slice(0, 5).map((err, i) => (
@@ -384,7 +444,7 @@ export function AccountDividends({
             <span className="text-xs text-gray-500">{dividends.length} events</span>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[56rem] text-sm">
+            <table className="w-full min-w-[62rem] text-sm">
               <thead>
                 <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-3 text-left">
@@ -408,6 +468,11 @@ export function AccountDividends({
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">
+                    <button type="button" onClick={() => toggleSort('shares')} className="hover:text-gray-300">
+                      Shares{sortIndicator('shares')}
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('gross_amount')} className="hover:text-gray-300">
                       Gross{sortIndicator('gross_amount')}
                     </button>
@@ -415,6 +480,11 @@ export function AccountDividends({
                   <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('net_amount')} className="hover:text-gray-300">
                       Net{sortIndicator('net_amount')}
+                    </button>
+                  </th>
+                  <th className="px-4 py-3 text-right">
+                    <button type="button" onClick={() => toggleSort('divYield')} className="hover:text-gray-300">
+                      Div. Yield{sortIndicator('divYield')}
                     </button>
                   </th>
                   <th className="px-4 py-3 text-center">
@@ -441,9 +511,28 @@ export function AccountDividends({
                       {d.security_name ?? '—'}
                     </td>
                     <td className="px-4 py-3 text-center text-gray-300">{d.financial_year}</td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gray-300">
+                      {d.shares != null ? d.shares.toLocaleString() : '—'}
+                    </td>
                     <td className="px-4 py-3 text-right tabular-nums text-gray-300">{fmt(d.gross_amount)}</td>
                     <td className="px-4 py-3 text-right tabular-nums font-medium text-gray-200">
                       {fmt(d.net_amount)}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {rowYield(d) != null ? (
+                        <div>
+                          <span className="font-medium text-emerald-400 tabular-nums">
+                            {rowYield(d)!.toFixed(2)}%
+                          </span>
+                          {d.shares != null && (
+                            <p className="text-xs text-gray-500 tabular-nums">
+                              ₨ {(d.net_amount / d.shares).toFixed(2)}/sh
+                            </p>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-500">—</span>
+                      )}
                     </td>
                     <td className="px-4 py-3 text-center text-xs uppercase text-gray-400">{d.status}</td>
                     <td className="px-4 py-3 text-center text-xs text-gray-500 whitespace-nowrap">
