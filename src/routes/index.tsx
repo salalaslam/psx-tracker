@@ -47,6 +47,16 @@ function fmtDate(sess: string): string {
   return `${months[month - 1]} ${day}`
 }
 
+function fmtDateFull(sess: string): string {
+  const [datePart] = sess.split('T')
+  return new Date(`${datePart}T12:00:00`).toLocaleDateString('en-PK', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
 function calcSummary(holdings: HoldingWithPrice[]) {
   let invested = 0
   let current = 0
@@ -343,6 +353,8 @@ function Dashboard() {
 }
 
 function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
   if (data.length === 0) return null
 
   const W = 800
@@ -365,6 +377,8 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   const isCurrentUp = currentChange >= 0
   const color = isUp ? '#34d399' : '#f87171'
   const areaColor = isUp ? '#34d39915' : '#f8717115'
+  const periodLabel =
+    data.length >= 2 ? `${fmtDate(data[0].sess)} → today` : ''
 
   const allValues = [...values, ...currentAssetValues]
   const minV = Math.min(...allValues)
@@ -428,7 +442,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
             <p className={`text-sm font-medium ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
               {isUp ? '+' : ''}{fmt(change)} ({isUp ? '+' : ''}{changePct.toFixed(2)}%)
             </p>
-            <p className="text-xs text-gray-500 mt-1">Today&apos;s holdings (Jan 1 → today)</p>
+            <p className="text-xs text-gray-500 mt-1">Today&apos;s holdings ({periodLabel})</p>
             <p className="text-sm font-semibold text-sky-300">₨ {fmt(latestCurrent)}</p>
             <p className={`text-xs font-medium ${isCurrentUp ? 'text-sky-400/80' : 'text-red-400/80'}`}>
               {isCurrentUp ? '+' : ''}{fmt(currentChange)} ({isCurrentUp ? '+' : ''}{currentChangePct.toFixed(2)}%)
@@ -442,8 +456,60 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
           <p className="mt-1 text-xs text-gray-500">Fetch prices again to start tracking history</p>
         </div>
       ) : (
-        <div className="px-2 py-2">
-          <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: '200px' }}>
+        <div
+          className="relative px-2 py-2"
+          onMouseLeave={() => setHoverIdx(null)}
+        >
+          {hoverIdx !== null && (
+            <div
+              className="pointer-events-none absolute z-10 rounded-lg border border-gray-700 bg-gray-950/95 px-3 py-2 shadow-lg backdrop-blur-sm"
+              style={{
+                left: `${(pts[hoverIdx].x / W) * 100}%`,
+                top: 8,
+                transform:
+                  pts[hoverIdx].x > W * 0.72
+                    ? 'translateX(-100%)'
+                    : pts[hoverIdx].x < W * 0.28
+                      ? 'translateX(0)'
+                      : 'translateX(-50%)',
+              }}
+            >
+              <p className="text-xs font-medium text-gray-300">{fmtDateFull(data[hoverIdx].sess)}</p>
+              <div className="mt-1.5 space-y-1">
+                <div className="flex items-center justify-between gap-6 text-xs">
+                  <span className="flex items-center gap-1.5 text-gray-400">
+                    <span className="inline-block h-0.5 w-2.5 rounded bg-emerald-400" />
+                    As held
+                  </span>
+                  <span className="font-semibold text-emerald-300">₨ {fmt(values[hoverIdx])}</span>
+                </div>
+                <div className="flex items-center justify-between gap-6 text-xs">
+                  <span className="flex items-center gap-1.5 text-gray-400">
+                    <span className="inline-block w-2.5 border-t border-dashed border-sky-400" />
+                    Today&apos;s holdings
+                  </span>
+                  <span className="font-semibold text-sky-300">₨ {fmt(currentAssetValues[hoverIdx])}</span>
+                </div>
+              </div>
+            </div>
+          )}
+          <svg
+            viewBox={`0 0 ${W} ${H}`}
+            className="w-full cursor-crosshair"
+            style={{ height: '200px' }}
+            onMouseMove={e => {
+              const rect = e.currentTarget.getBoundingClientRect()
+              const mouseX = ((e.clientX - rect.left) / rect.width) * W
+              if (mouseX < padL || mouseX > W - padR) {
+                setHoverIdx(null)
+                return
+              }
+              const t = (mouseX - padL) / chartW
+              const idx = Math.round(t * (data.length - 1))
+              setHoverIdx(Math.max(0, Math.min(data.length - 1, idx)))
+            }}
+            onMouseLeave={() => setHoverIdx(null)}
+          >
             {ySteps.map(({ y, v }, i) => (
               <g key={i}>
                 <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#1f2937" strokeWidth="1" />
@@ -463,12 +529,46 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
               strokeLinecap="round"
             />
             <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-            <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="4" fill={color} />
-            <circle
-              cx={currentPts[currentPts.length - 1].x.toFixed(1)}
-              cy={currentPts[currentPts.length - 1].y.toFixed(1)}
-              r="3"
-              fill="#38bdf8"
+            {hoverIdx !== null && (
+              <>
+                <line
+                  x1={pts[hoverIdx].x.toFixed(1)}
+                  y1={padT}
+                  x2={pts[hoverIdx].x.toFixed(1)}
+                  y2={bottomY}
+                  stroke="#6b7280"
+                  strokeWidth="1"
+                  strokeDasharray="4 3"
+                />
+                <circle cx={pts[hoverIdx].x.toFixed(1)} cy={pts[hoverIdx].y.toFixed(1)} r="4" fill={color} stroke="#111827" strokeWidth="2" />
+                <circle
+                  cx={currentPts[hoverIdx].x.toFixed(1)}
+                  cy={currentPts[hoverIdx].y.toFixed(1)}
+                  r="3.5"
+                  fill="#38bdf8"
+                  stroke="#111827"
+                  strokeWidth="2"
+                />
+              </>
+            )}
+            {hoverIdx === null && (
+              <>
+                <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="4" fill={color} />
+                <circle
+                  cx={currentPts[currentPts.length - 1].x.toFixed(1)}
+                  cy={currentPts[currentPts.length - 1].y.toFixed(1)}
+                  r="3"
+                  fill="#38bdf8"
+                />
+              </>
+            )}
+            <rect
+              x={padL}
+              y={padT}
+              width={chartW}
+              height={chartH}
+              fill="transparent"
+              pointerEvents="all"
             />
             {labelIndices.map(i => (
               <text key={i} x={pts[i].x.toFixed(1)} y={H - 4} textAnchor="middle" fill="#4b5563" fontSize="9">
