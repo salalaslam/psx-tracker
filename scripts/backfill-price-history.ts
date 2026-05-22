@@ -5,7 +5,7 @@ import db, {
 } from '../src/db.server.ts'
 import { fetchPsxEod } from '../src/psx.server.ts'
 
-const SINCE = process.argv[2] ?? '2026-01-01'
+const SINCE = process.argv[2] ?? '2025-09-01'
 
 const txSymbols = (db.prepare('SELECT DISTINCT symbol FROM transactions').all() as { symbol: string }[])
   .map(r => r.symbol)
