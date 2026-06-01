@@ -1,9 +1,13 @@
 import { createServerFn } from '@tanstack/react-start'
 import {
+  addAccountCharge,
   addDividend,
   addTrade,
   createAccount,
+  deleteAccountCharge,
   deleteDividend,
+  getAccountChargeSummary,
+  getAccountCharges,
   getAllAccounts,
   getAllDividendTotals,
   getAllSymbols,
@@ -20,6 +24,7 @@ import {
   storeSnapshot,
   upsertStockSector,
 } from './db.server'
+import { isAccountChargeCategory } from './accountCharges'
 import { parseDividendPaste, parsePaymentDate } from './dividends'
 import { fetchAllPrices, fetchAndStoreSectors, fetchPsxQuote } from './psx.server'
 
@@ -164,6 +169,57 @@ export const serverFetchAndStorePrices = createServerFn({ method: 'POST' }).hand
 export const serverGetPortfolioHistory = createServerFn({ method: 'GET' }).handler(
   async () => getPortfolioValueHistory(),
 )
+
+export const serverGetAccountCharges = createServerFn({ method: 'GET' })
+  .inputValidator((account: unknown) => String(account))
+  .handler(async ({ data }) => ({
+    charges: getAccountCharges(data),
+    summary: getAccountChargeSummary(data),
+  }))
+
+export const serverAddAccountCharge = createServerFn({ method: 'POST' })
+  .inputValidator((input: unknown) => {
+    const parsed = (input ?? {}) as Record<string, unknown>
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    const category = String(parsed.category ?? '').trim()
+    const label = String(parsed.label ?? '').trim()
+    const amount = Number(parsed.amount)
+    const charged_at = String(parsed.charged_at ?? '').trim()
+    const voucher_no =
+      parsed.voucher_no != null && String(parsed.voucher_no).trim() !== ''
+        ? String(parsed.voucher_no).trim()
+        : null
+    const notes =
+      parsed.notes != null && String(parsed.notes).trim() !== '' ? String(parsed.notes).trim() : null
+
+    if (!account) throw new Error('Account is required')
+    if (!isAccountChargeCategory(category)) throw new Error('Invalid category')
+    if (!label) throw new Error('Label is required')
+    if (!Number.isFinite(amount) || amount === 0) {
+      throw new Error('Amount must be non-zero (negative = debit, positive = credit)')
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(charged_at)) {
+      throw new Error('Date is required (YYYY-MM-DD)')
+    }
+
+    return { account, category, label, amount, charged_at, voucher_no, notes }
+  })
+  .handler(async ({ data }) => addAccountCharge(data))
+
+export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
+  .inputValidator((input: unknown) => {
+    const parsed = (input ?? {}) as { id?: unknown; account?: unknown }
+    const id = Number(parsed.id)
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid charge id')
+    if (!account) throw new Error('Account is required')
+    return { id, account }
+  })
+  .handler(async ({ data }) => {
+    const ok = deleteAccountCharge(data.id, data.account)
+    if (!ok) throw new Error('Charge not found')
+    return { ok: true }
+  })
 
 export const serverGetDividends = createServerFn({ method: 'GET' })
   .inputValidator((account: unknown) => String(account))

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isAccountChargeCategory } from './accountCharges'
 import { resolveTradeFees } from './fees'
 import type { ParsedDividendRow } from './dividends'
 
@@ -84,6 +85,22 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_dividends_account_date
     ON dividends(account, payment_date DESC);
+
+  CREATE TABLE IF NOT EXISTS account_charges (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    account     TEXT    NOT NULL,
+    category    TEXT    NOT NULL,
+    label       TEXT    NOT NULL,
+    amount      REAL    NOT NULL,
+    charged_at  TEXT    NOT NULL,
+    voucher_no  TEXT,
+    notes       TEXT,
+    FOREIGN KEY(account) REFERENCES accounts(name),
+    UNIQUE(account, voucher_no)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_account_charges_account_date
+    ON account_charges(account, charged_at DESC);
 `)
 
 function migrateTransactionsFeeColumns(): void {
@@ -903,6 +920,175 @@ export function deleteDividend(id: number, account: string): boolean {
     'DELETE FROM dividends WHERE id = ? AND account = ?',
   ).run(id, account.trim().toLowerCase())
   return result.changes > 0
+}
+
+// ── Account charges (non-trade cash) ────────────────────────────────────────
+
+export interface AccountCharge {
+  id: number
+  account: string
+  category: string
+  label: string
+  amount: number
+  charged_at: string
+  voucher_no: string | null
+  notes: string | null
+}
+
+export interface AccountChargeSummary {
+  count: number
+  total_debits: number
+  total_credits: number
+  net: number
+}
+
+export interface AddAccountChargeInput {
+  account: string
+  category: string
+  label: string
+  amount: number
+  charged_at: string
+  voucher_no?: string | null
+  notes?: string | null
+}
+
+function validateAccountChargeInput(input: AddAccountChargeInput): string | null {
+  const account = input.account.trim().toLowerCase()
+  if (!account) return 'Account is required'
+  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)) {
+    return 'Account does not exist'
+  }
+  if (!isAccountChargeCategory(input.category)) return 'Invalid category'
+  const label = input.label.trim()
+  if (!label) return 'Label is required'
+  if (!Number.isFinite(input.amount) || input.amount === 0) {
+    return 'Amount must be a non-zero number (negative = debit, positive = credit)'
+  }
+  const chargedAt = input.charged_at.trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(chargedAt)) {
+    return 'Date is required (YYYY-MM-DD)'
+  }
+  const voucher = input.voucher_no?.trim() || null
+  if (voucher) {
+    const dup = db.prepare(
+      'SELECT 1 FROM account_charges WHERE account = ? AND voucher_no = ?',
+    ).get(account, voucher)
+    if (dup) return `Voucher ${voucher} already exists for this account`
+  }
+  return null
+}
+
+export function getAccountCharges(account: string): AccountCharge[] {
+  return db.prepare(`
+    SELECT id, account, category, label, amount, charged_at, voucher_no, notes
+    FROM account_charges
+    WHERE account = ?
+    ORDER BY charged_at DESC, id DESC
+  `).all(account.trim().toLowerCase()) as AccountCharge[]
+}
+
+export function getAccountChargeSummary(account: string): AccountChargeSummary {
+  const rows = db.prepare(`
+    SELECT amount FROM account_charges WHERE account = ?
+  `).all(account.trim().toLowerCase()) as { amount: number }[]
+
+  let total_debits = 0
+  let total_credits = 0
+  for (const { amount } of rows) {
+    if (amount < 0) total_debits += amount
+    else total_credits += amount
+  }
+  return {
+    count: rows.length,
+    total_debits,
+    total_credits,
+    net: total_debits + total_credits,
+  }
+}
+
+export function addAccountCharge(
+  input: AddAccountChargeInput,
+): { ok: boolean; error?: string; id?: number } {
+  const err = validateAccountChargeInput(input)
+  if (err) return { ok: false, error: err }
+
+  const account = input.account.trim().toLowerCase()
+  const voucher = input.voucher_no?.trim() || null
+  const notes = input.notes?.trim() || null
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO account_charges (account, category, label, amount, charged_at, voucher_no, notes)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      account,
+      input.category,
+      input.label.trim(),
+      Math.round(input.amount * 100) / 100,
+      input.charged_at.trim(),
+      voucher,
+      notes,
+    )
+    return { ok: true, id: Number(result.lastInsertRowid) }
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('UNIQUE')) return { ok: false, error: 'Duplicate voucher number for this account' }
+    return { ok: false, error: msg }
+  }
+}
+
+export function deleteAccountCharge(id: number, account: string): boolean {
+  const result = db.prepare(
+    'DELETE FROM account_charges WHERE id = ? AND account = ?',
+  ).run(id, account.trim().toLowerCase())
+  return result.changes > 0
+}
+
+export interface AccountChargeSeedRow {
+  category: string
+  label: string
+  amount: number
+  charged_at: string
+  voucher_no: string
+  notes?: string | null
+}
+
+export function importAccountCharges(
+  account: string,
+  rows: AccountChargeSeedRow[],
+): { inserted: number; skipped: number; errors: string[] } {
+  const acct = account.trim().toLowerCase()
+  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(acct)) {
+    return { inserted: 0, skipped: 0, errors: ['Account does not exist'] }
+  }
+
+  const existsStmt = db.prepare(
+    'SELECT 1 FROM account_charges WHERE account = ? AND voucher_no = ?',
+  )
+  let inserted = 0
+  let skipped = 0
+  const errors: string[] = []
+
+  for (const row of rows) {
+    const voucher = row.voucher_no.trim()
+    if (existsStmt.get(acct, voucher)) {
+      skipped++
+      continue
+    }
+    const result = addAccountCharge({
+      account: acct,
+      category: row.category,
+      label: row.label,
+      amount: row.amount,
+      charged_at: row.charged_at,
+      voucher_no: voucher,
+      notes: row.notes ?? null,
+    })
+    if (result.ok) inserted++
+    else errors.push(`${voucher}: ${result.error ?? 'failed'}`)
+  }
+
+  return { inserted, skipped, errors }
 }
 
 export function getPortfolioValueHistory(): PortfolioValuePoint[] {

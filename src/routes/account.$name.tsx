@@ -4,6 +4,7 @@ import {
   serverAddTrade,
   serverEnsureSectors,
   serverGetAllAccounts,
+  serverGetAccountCharges,
   serverGetDividends,
   serverGetHoldings,
   serverGetTransactions,
@@ -13,6 +14,7 @@ import type { HoldingWithPrice } from '../db.server'
 import { transactionTotal, transactionTradeValue } from '../fees'
 import { AllocationDonut } from '../components/AllocationDonut'
 import { AccountTransactions, type TransactionRow } from '../components/AccountTransactions'
+import { AccountCharges } from '../components/AccountCharges'
 import { AccountDividends } from '../components/AccountDividends'
 
 export const Route = createFileRoute('/account/$name')({
@@ -21,10 +23,11 @@ export const Route = createFileRoute('/account/$name')({
 
     const accounts = await serverGetAllAccounts()
     if (!accounts.includes(params.name)) throw notFound()
-    const [holdings, transactions, dividendData] = await Promise.all([
+    const [holdings, transactions, dividendData, chargeData] = await Promise.all([
       serverGetHoldings({ data: params.name }),
       serverGetTransactions({ data: params.name }),
       serverGetDividends({ data: params.name }),
+      serverGetAccountCharges({ data: params.name }),
     ])
     const transactionRows: TransactionRow[] = transactions.map(t => ({
       ...t,
@@ -43,6 +46,8 @@ export const Route = createFileRoute('/account/$name')({
       transactions: transactionRows,
       dividends: dividendData.dividends,
       dividendSummary: dividendData.summary,
+      accountCharges: chargeData.charges,
+      accountChargeSummary: chargeData.summary,
       account: params.name,
     }
   },
@@ -53,10 +58,18 @@ function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-type AccountTab = 'portfolio' | 'transactions' | 'dividends'
+type AccountTab = 'portfolio' | 'transactions' | 'dividends' | 'charges'
 
 function AccountPage() {
-  const { holdings, transactions, dividends, dividendSummary, account } = Route.useLoaderData()
+  const {
+    holdings,
+    transactions,
+    dividends,
+    dividendSummary,
+    accountCharges,
+    accountChargeSummary,
+    account,
+  } = Route.useLoaderData()
   const router = useRouter()
   const name = account.charAt(0).toUpperCase() + account.slice(1)
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
@@ -211,7 +224,7 @@ function AccountPage() {
         <h1 className="text-2xl font-bold text-white">{name}'s Portfolio</h1>
         <p className="mt-1 text-sm text-gray-400">
           {holdings.length} positions · {transactions.length} transactions · {dividends.length}{' '}
-          dividends
+          dividends · {accountCharges.length} charges
         </p>
       </div>
 
@@ -231,6 +244,12 @@ function AccountPage() {
             {dividends.length}
           </span>
         </TabButton>
+        <TabButton active={activeTab === 'charges'} onClick={() => setActiveTab('charges')}>
+          Charges
+          <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
+            {accountCharges.length}
+          </span>
+        </TabButton>
       </div>
 
       {activeTab === 'transactions' ? (
@@ -241,6 +260,12 @@ function AccountPage() {
           dividends={dividends}
           summary={dividendSummary}
           holdings={holdings}
+        />
+      ) : activeTab === 'charges' ? (
+        <AccountCharges
+          account={account}
+          charges={accountCharges}
+          summary={accountChargeSummary}
         />
       ) : (
         <>
@@ -264,6 +289,30 @@ function AccountPage() {
           color={pricedCount > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
         />
         </div>
+        {accountChargeSummary.count > 0 && (
+          <p className="border-b border-gray-800 px-5 py-2 text-xs text-gray-500">
+            Account charges (net):{' '}
+            <span
+              className={
+                accountChargeSummary.net < 0
+                  ? 'text-red-400'
+                  : accountChargeSummary.net > 0
+                    ? 'text-emerald-400'
+                    : 'text-gray-300'
+              }
+            >
+              {accountChargeSummary.net >= 0 ? '+' : ''}₨ {fmt(accountChargeSummary.net)}
+            </span>
+            {' · '}
+            <button
+              type="button"
+              onClick={() => setActiveTab('charges')}
+              className="text-emerald-500/90 hover:text-emerald-400"
+            >
+              View charges
+            </button>
+          </p>
+        )}
         <AllocationDonut
           variant="compact"
           holdings={holdings}
