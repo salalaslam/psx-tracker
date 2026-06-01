@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
+import { useState } from 'react'
 import { serverGetPriceHistory } from '../serverFns'
 import type { PriceSnapshot } from '../db.server'
 
@@ -15,9 +16,12 @@ function fmt(n: number) {
 }
 
 function MiniChart({ data }: { data: PriceSnapshot[] }) {
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+
   if (data.length < 2) return null
 
-  const prices = [...data].reverse().map(d => d.price)
+  const series = [...data].reverse()
+  const prices = series.map(d => d.price)
   const min = Math.min(...prices)
   const max = Math.max(...prices)
   const range = max - min || 1
@@ -25,37 +29,98 @@ function MiniChart({ data }: { data: PriceSnapshot[] }) {
   const W = 600
   const H = 120
   const pad = 8
+  const chartW = W - pad * 2
+  const chartH = H - pad * 2
 
-  const points = prices.map((p, i) => {
-    const x = pad + (i / (prices.length - 1)) * (W - pad * 2)
-    const y = H - pad - ((p - min) / range) * (H - pad * 2)
-    return `${x},${y}`
-  })
+  const pts = prices.map((p, i) => ({
+    x: pad + (i / (prices.length - 1)) * chartW,
+    y: H - pad - ((p - min) / range) * chartH,
+  }))
 
-  const polyline = points.join(' ')
-  const firstY = parseFloat(points[0].split(',')[1])
-  const lastY = parseFloat(points[points.length - 1].split(',')[1])
+  const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
+  const lastPt = pts[pts.length - 1]
   const isUp = prices[prices.length - 1] >= prices[0]
-
   const color = isUp ? '#34d399' : '#f87171'
 
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: '120px' }}>
-      {/* grid lines */}
-      {[0.25, 0.5, 0.75].map(f => {
-        const y = pad + f * (H - pad * 2)
-        return <line key={f} x1={pad} y1={y} x2={W - pad} y2={y} stroke="#374151" strokeWidth="1" />
-      })}
-      {/* line */}
-      <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-      {/* end dot */}
-      <circle
-        cx={parseFloat(points[points.length - 1].split(',')[0])}
-        cy={lastY}
-        r="4"
-        fill={color}
-      />
-    </svg>
+    <div className="relative" onMouseLeave={() => setHoverIdx(null)}>
+      {hoverIdx !== null && (
+        <div
+          className="pointer-events-none absolute z-10 rounded-lg border border-gray-700 bg-gray-950/95 px-3 py-2 shadow-lg backdrop-blur-sm"
+          style={{
+            left: `${(pts[hoverIdx].x / W) * 100}%`,
+            top: 0,
+            transform:
+              pts[hoverIdx].x > W * 0.72
+                ? 'translateX(-100%)'
+                : pts[hoverIdx].x < W * 0.28
+                  ? 'translateX(0)'
+                  : 'translateX(-50%)',
+          }}
+        >
+          <p className="text-xs font-medium text-gray-300">
+            {new Date(series[hoverIdx].fetched_at).toLocaleString('en-PK', {
+              weekday: 'short',
+              month: 'short',
+              day: 'numeric',
+              year: 'numeric',
+              hour: 'numeric',
+              minute: '2-digit',
+            })}
+          </p>
+          <p className={`mt-1 text-sm font-semibold ${isUp ? 'text-emerald-300' : 'text-red-300'}`}>
+            ₨ {fmt(series[hoverIdx].price)}
+          </p>
+        </div>
+      )}
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        className="w-full cursor-crosshair"
+        style={{ height: '120px' }}
+        onMouseMove={e => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          const mouseX = ((e.clientX - rect.left) / rect.width) * W
+          if (mouseX < pad || mouseX > W - pad) {
+            setHoverIdx(null)
+            return
+          }
+          const t = (mouseX - pad) / chartW
+          const idx = Math.round(t * (series.length - 1))
+          setHoverIdx(Math.max(0, Math.min(series.length - 1, idx)))
+        }}
+        onMouseLeave={() => setHoverIdx(null)}
+      >
+        {[0.25, 0.5, 0.75].map(f => {
+          const y = pad + f * chartH
+          return <line key={f} x1={pad} y1={y} x2={W - pad} y2={y} stroke="#374151" strokeWidth="1" />
+        })}
+        <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {hoverIdx !== null ? (
+          <>
+            <line
+              x1={pts[hoverIdx].x.toFixed(1)}
+              y1={pad}
+              x2={pts[hoverIdx].x.toFixed(1)}
+              y2={H - pad}
+              stroke="#6b7280"
+              strokeWidth="1"
+              strokeDasharray="4 3"
+            />
+            <circle
+              cx={pts[hoverIdx].x.toFixed(1)}
+              cy={pts[hoverIdx].y.toFixed(1)}
+              r="4"
+              fill={color}
+              stroke="#111827"
+              strokeWidth="2"
+            />
+          </>
+        ) : (
+          <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="4" fill={color} />
+        )}
+        <rect x={pad} y={pad} width={chartW} height={chartH} fill="transparent" pointerEvents="all" />
+      </svg>
+    </div>
   )
 }
 
