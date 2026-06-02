@@ -283,7 +283,15 @@ function Dashboard() {
 
       {/* Combined summary */}
       <div className="rounded-xl border border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 p-6">
-        <h2 className="mb-4 text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
+          <Link
+            to="/combined-history"
+            className="rounded-md bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-700"
+          >
+            View Price History →
+          </Link>
+        </div>
         <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-6">
           <Stat label="Total Invested" value={`₨ ${fmt(combined.invested)}`} />
           <Stat

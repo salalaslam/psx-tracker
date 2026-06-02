@@ -11,6 +11,7 @@ import {
   getAllAccounts,
   getAllDividendTotals,
   getAllSymbols,
+  getCombinedHoldingPriceHistory,
   getDividendSummary,
   getDividends,
   getHoldings,
@@ -135,6 +136,10 @@ export const serverGetLatestPrices = createServerFn({ method: 'GET' }).handler(
 export const serverGetPriceHistory = createServerFn({ method: 'GET' })
   .inputValidator((symbol: unknown) => String(symbol))
   .handler(async ({ data }) => getPriceHistory(data))
+
+export const serverGetCombinedHoldingPriceHistory = createServerFn({ method: 'GET' }).handler(
+  async () => getCombinedHoldingPriceHistory(),
+)
 
 export type FetchResult = {
   symbol: string

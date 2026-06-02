@@ -9,10 +9,16 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as CombinedHistoryRouteImport } from './routes/combined-history'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as HistorySymbolRouteImport } from './routes/history.$symbol'
 import { Route as AccountNameRouteImport } from './routes/account.$name'
 
+const CombinedHistoryRoute = CombinedHistoryRouteImport.update({
+  id: '/combined-history',
+  path: '/combined-history',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -31,36 +37,52 @@ const AccountNameRoute = AccountNameRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/combined-history': typeof CombinedHistoryRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/combined-history': typeof CombinedHistoryRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/combined-history': typeof CombinedHistoryRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/account/$name' | '/history/$symbol'
+  fullPaths: '/' | '/combined-history' | '/account/$name' | '/history/$symbol'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/account/$name' | '/history/$symbol'
-  id: '__root__' | '/' | '/account/$name' | '/history/$symbol'
+  to: '/' | '/combined-history' | '/account/$name' | '/history/$symbol'
+  id:
+    | '__root__'
+    | '/'
+    | '/combined-history'
+    | '/account/$name'
+    | '/history/$symbol'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  CombinedHistoryRoute: typeof CombinedHistoryRoute
   AccountNameRoute: typeof AccountNameRoute
   HistorySymbolRoute: typeof HistorySymbolRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/combined-history': {
+      id: '/combined-history'
+      path: '/combined-history'
+      fullPath: '/combined-history'
+      preLoaderRoute: typeof CombinedHistoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -87,6 +109,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  CombinedHistoryRoute: CombinedHistoryRoute,
   AccountNameRoute: AccountNameRoute,
   HistorySymbolRoute: HistorySymbolRoute,
 }

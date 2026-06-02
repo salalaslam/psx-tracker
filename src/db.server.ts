@@ -192,6 +192,22 @@ export interface PriceSnapshot {
   fetched_at: string
 }
 
+export interface CombinedHoldingPricePoint {
+  fetched_at: string
+  price: number
+}
+
+export interface CombinedHoldingPriceSeries {
+  symbol: string
+  sector: string | null
+  shares: number
+  account_shares: Record<string, number>
+  first_purchase_at: string | null
+  latest_price: number | null
+  latest_fetched_at: string | null
+  points: CombinedHoldingPricePoint[]
+}
+
 export interface HoldingWithPrice extends Holding {
   latest_price: number | null
   latest_fetched_at: string | null
@@ -316,6 +332,92 @@ export function getLatestPrices(): Record<string, { price: number; fetched_at: s
   `).all() as { symbol: string; price: number; fetched_at: string }[]
 
   return Object.fromEntries(rows.map(r => [r.symbol, { price: r.price, fetched_at: r.fetched_at }]))
+}
+
+export function getCombinedHoldingPriceHistory(): CombinedHoldingPriceSeries[] {
+  const rows = db.prepare(`
+    SELECT
+      h.symbol,
+      h.account,
+      h.shares,
+      st.sector,
+      first_buy.first_purchase_at,
+      latest.price AS latest_price,
+      latest.fetched_at AS latest_fetched_at,
+      first_snap.first_snapshot_at
+    FROM holdings h
+    LEFT JOIN stocks st ON st.symbol = h.symbol
+    LEFT JOIN (
+      SELECT symbol, MIN(traded_at) AS first_purchase_at
+      FROM transactions
+      WHERE side = 'buy'
+      GROUP BY symbol
+    ) first_buy ON first_buy.symbol = h.symbol
+    LEFT JOIN (
+      SELECT symbol, MIN(fetched_at) AS first_snapshot_at
+      FROM price_snapshots
+      GROUP BY symbol
+    ) first_snap ON first_snap.symbol = h.symbol
+    LEFT JOIN price_snapshots latest
+      ON latest.symbol = h.symbol
+      AND latest.fetched_at = (
+        SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = h.symbol
+      )
+    ORDER BY h.symbol, h.account
+  `).all() as Array<{
+    symbol: string
+    account: string
+    shares: number
+    sector: string | null
+    first_purchase_at: string | null
+    latest_price: number | null
+    latest_fetched_at: string | null
+    first_snapshot_at: string | null
+  }>
+
+  const grouped = new Map<
+    string,
+    Omit<CombinedHoldingPriceSeries, 'points'> & { first_snapshot_at: string | null }
+  >()
+
+  for (const row of rows) {
+    const existing = grouped.get(row.symbol)
+    if (existing) {
+      existing.shares += row.shares
+      existing.account_shares[row.account] = (existing.account_shares[row.account] ?? 0) + row.shares
+      if (!existing.sector && row.sector) existing.sector = row.sector
+      continue
+    }
+
+    grouped.set(row.symbol, {
+      symbol: row.symbol,
+      sector: row.sector,
+      shares: row.shares,
+      account_shares: { [row.account]: row.shares },
+      first_purchase_at: row.first_purchase_at,
+      first_snapshot_at: row.first_snapshot_at,
+      latest_price: row.latest_price,
+      latest_fetched_at: row.latest_fetched_at,
+    })
+  }
+
+  const historyStmt = db.prepare(`
+    SELECT fetched_at, price
+    FROM price_snapshots
+    WHERE symbol = ?
+      AND date(fetched_at) >= date(?)
+    ORDER BY fetched_at ASC
+    LIMIT 1000
+  `)
+
+  return [...grouped.values()].map(row => {
+    const startAt = row.first_purchase_at ?? row.first_snapshot_at
+    const points = startAt
+      ? (historyStmt.all(row.symbol, startAt) as CombinedHoldingPricePoint[])
+      : []
+    const { first_snapshot_at: _firstSnapshotAt, ...series } = row
+    return { ...series, points }
+  })
 }
 
 export interface PortfolioValuePoint {
@@ -1127,4 +1229,3 @@ export function getPortfolioValueHistory(): PortfolioValuePoint[] {
 }
 
 export default db
-

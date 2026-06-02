@@ -90,6 +90,12 @@ function Header() {
           >
             Dashboard
           </Link>
+          <Link
+            to="/combined-history"
+            className="rounded-md px-3 py-1.5 transition-colors hover:bg-gray-800 [&.active]:bg-gray-800 [&.active]:text-emerald-400"
+          >
+            Combined History
+          </Link>
           {!loading &&
             accounts.map(account => (
               <Link
