@@ -125,6 +125,15 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
     }
   }, [])
 
+  const setAllDatasetsVisible = (visible: boolean) => {
+    const chartInstance = chartRef.current
+    if (!chartInstance) return
+    chartInstance.data.datasets.forEach((_, datasetIndex) => {
+      chartInstance.setDatasetVisibility(datasetIndex, visible)
+    })
+    chartInstance.update()
+  }
+
   const chart = useMemo(() => {
     const days = new Set<string>()
     for (const stock of data) {
@@ -260,6 +269,20 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
               <span className="hidden text-xs text-gray-500 sm:inline">
                 Scroll to zoom · drag to select · drag chart to pan
               </span>
+              <button
+                type="button"
+                onClick={() => setAllDatasetsVisible(true)}
+                className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white"
+              >
+                Show all
+              </button>
+              <button
+                type="button"
+                onClick={() => setAllDatasetsVisible(false)}
+                className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white"
+              >
+                Hide all
+              </button>
               <button
                 type="button"
                 onClick={() => chartRef.current?.resetZoom()}
