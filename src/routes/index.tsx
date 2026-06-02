@@ -1,9 +1,23 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
-import { useState } from 'react'
+import {
+  CategoryScale,
+  Chart as ChartJS,
+  Filler,
+  Legend,
+  LinearScale,
+  LineElement,
+  PointElement,
+  Tooltip,
+  type ChartOptions,
+} from 'chart.js'
+import { useMemo, useState } from 'react'
+import { Line } from 'react-chartjs-2'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
 
 export const Route = createFileRoute('/')({
   loader: async () => {
@@ -361,67 +375,119 @@ function Dashboard() {
 }
 
 function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
-  const [hoverIdx, setHoverIdx] = useState<number | null>(null)
+  const { chart, stats } = useMemo(() => {
+    if (data.length === 0) {
+      return { chart: { labels: [] as string[], datasets: [] }, stats: null }
+    }
 
-  if (data.length === 0) return null
+    const values = data.map(d => d.portfolio_value)
+    const currentAssetValues = data.map(d => d.current_assets_value)
+    const latest = values[values.length - 1]
+    const latestCurrent = currentAssetValues[currentAssetValues.length - 1]
+    const first = values[0]
+    const firstCurrent = currentAssetValues[0]
+    const change = latest - first
+    const changePct = first > 0 ? (change / first) * 100 : 0
+    const currentChange = latestCurrent - firstCurrent
+    const currentChangePct = firstCurrent > 0 ? (currentChange / firstCurrent) * 100 : 0
+    const isUp = change >= 0
+    const isCurrentUp = currentChange >= 0
+    const color = isUp ? '#34d399' : '#f87171'
+    const areaColor = isUp ? 'rgba(52, 211, 153, 0.08)' : 'rgba(248, 113, 113, 0.08)'
 
-  const W = 800
-  const H = 200
-  const padL = 72, padR = 16, padT = 12, padB = 36
-  const chartW = W - padL - padR
-  const chartH = H - padT - padB
+    return {
+      stats: {
+        latest,
+        latestCurrent,
+        change,
+        changePct,
+        currentChange,
+        currentChangePct,
+        isUp,
+        isCurrentUp,
+        periodLabel: data.length >= 2 ? `${fmtDate(data[0].sess)} → today` : '',
+      },
+      chart: {
+        labels: data.map(d => d.sess),
+        datasets: [
+          {
+            label: 'As held',
+            data: values,
+            borderColor: color,
+            backgroundColor: areaColor,
+            borderWidth: 2,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            fill: true,
+            tension: 0.28,
+          },
+          {
+            label: "Today's holdings",
+            data: currentAssetValues,
+            borderColor: '#38bdf8',
+            backgroundColor: 'transparent',
+            borderWidth: 2,
+            borderDash: [6, 4],
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            fill: false,
+            tension: 0.28,
+          },
+        ],
+      },
+    }
+  }, [data])
 
-  const values = data.map(d => d.portfolio_value)
-  const currentAssetValues = data.map(d => d.current_assets_value)
-  const latest = values[values.length - 1]
-  const latestCurrent = currentAssetValues[currentAssetValues.length - 1]
-  const first = values[0]
-  const firstCurrent = currentAssetValues[0]
-  const change = latest - first
-  const changePct = first > 0 ? (change / first) * 100 : 0
-  const currentChange = latestCurrent - firstCurrent
-  const currentChangePct = firstCurrent > 0 ? (currentChange / firstCurrent) * 100 : 0
-  const isUp = change >= 0
-  const isCurrentUp = currentChange >= 0
-  const color = isUp ? '#34d399' : '#f87171'
-  const areaColor = isUp ? '#34d39915' : '#f8717115'
-  const periodLabel =
-    data.length >= 2 ? `${fmtDate(data[0].sess)} → today` : ''
+  const options = useMemo<ChartOptions<'line'>>(
+    () => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      interaction: {
+        mode: 'index',
+        intersect: false,
+      },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(3, 7, 18, 0.96)',
+          borderColor: '#374151',
+          borderWidth: 1,
+          titleColor: '#e5e7eb',
+          bodyColor: '#d1d5db',
+          padding: 10,
+          displayColors: true,
+          callbacks: {
+            title: items => fmtDateFull(String(items[0]?.label ?? '')),
+            label: item => `${item.dataset.label}: ₨ ${fmt(Number(item.parsed.y))}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: '#1f2937' },
+          border: { color: '#374151' },
+          ticks: {
+            color: '#6b7280',
+            maxRotation: 0,
+            autoSkipPadding: 18,
+            callback: (_value, index) => fmtDate(chart.labels[index] ?? ''),
+          },
+        },
+        y: {
+          grid: { color: '#1f2937' },
+          border: { color: '#374151' },
+          ticks: {
+            color: '#6b7280',
+            callback: value => fmtCompact(Number(value)),
+          },
+        },
+      },
+    }),
+    [chart.labels],
+  )
 
-  const allValues = [...values, ...currentAssetValues]
-  const minV = Math.min(...allValues)
-  const maxV = Math.max(...allValues)
-  const range = maxV - minV || latest * 0.02 || 1
-  const rangeMin = minV - range * 0.05
-  const rangeMax = maxV + range * 0.05
-  const rangeTotal = rangeMax - rangeMin
-
-  const xAt = (i: number) =>
-    padL + (data.length === 1 ? chartW / 2 : (i / (data.length - 1)) * chartW)
-  const yAt = (v: number) => padT + chartH - ((v - rangeMin) / rangeTotal) * chartH
-
-  const pts = values.map((v, i) => ({ x: xAt(i), y: yAt(v) }))
-  const currentPts = currentAssetValues.map((v, i) => ({ x: xAt(i), y: yAt(v) }))
-
-  const polyline = pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
-  const currentPolyline = currentPts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')
-  const lastPt = pts[pts.length - 1]
-  const firstPt = pts[0]
-  const bottomY = padT + chartH
-  const areaD = `M${firstPt.x.toFixed(1)},${bottomY} ${pts.map(p => `L${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ')} L${lastPt.x.toFixed(1)},${bottomY} Z`
-
-  const ySteps = [0, 1 / 3, 2 / 3, 1].map(f => ({
-    y: padT + chartH - f * chartH,
-    v: rangeMin + f * rangeTotal,
-  }))
-
-  const maxLabels = Math.min(data.length, 6)
-  const labelIndices =
-    data.length <= maxLabels
-      ? data.map((_, i) => i)
-      : Array.from({ length: maxLabels }, (_, k) =>
-          Math.round((k * (data.length - 1)) / (maxLabels - 1)),
-        )
+  if (data.length === 0 || !stats) return null
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 overflow-hidden">
@@ -446,144 +512,26 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
         </div>
         {data.length >= 2 && (
           <div className="text-right">
-            <p className="text-lg font-bold text-white">₨ {fmt(latest)}</p>
-            <p className={`text-sm font-medium ${isUp ? 'text-emerald-400' : 'text-red-400'}`}>
-              {isUp ? '+' : ''}{fmt(change)} ({isUp ? '+' : ''}{changePct.toFixed(2)}%)
+            <p className="text-lg font-bold text-white">₨ {fmt(stats.latest)}</p>
+            <p className={`text-sm font-medium ${stats.isUp ? 'text-emerald-400' : 'text-red-400'}`}>
+              {stats.isUp ? '+' : ''}{fmt(stats.change)} ({stats.isUp ? '+' : ''}{stats.changePct.toFixed(2)}%)
             </p>
-            <p className="text-xs text-gray-500 mt-1">Today&apos;s holdings ({periodLabel})</p>
-            <p className="text-sm font-semibold text-sky-300">₨ {fmt(latestCurrent)}</p>
-            <p className={`text-xs font-medium ${isCurrentUp ? 'text-sky-400/80' : 'text-red-400/80'}`}>
-              {isCurrentUp ? '+' : ''}{fmt(currentChange)} ({isCurrentUp ? '+' : ''}{currentChangePct.toFixed(2)}%)
+            <p className="text-xs text-gray-500 mt-1">Today&apos;s holdings ({stats.periodLabel})</p>
+            <p className="text-sm font-semibold text-sky-300">₨ {fmt(stats.latestCurrent)}</p>
+            <p className={`text-xs font-medium ${stats.isCurrentUp ? 'text-sky-400/80' : 'text-red-400/80'}`}>
+              {stats.isCurrentUp ? '+' : ''}{fmt(stats.currentChange)} ({stats.isCurrentUp ? '+' : ''}{stats.currentChangePct.toFixed(2)}%)
             </p>
           </div>
         )}
       </div>
       {data.length < 2 ? (
         <div className="px-6 py-8 text-center">
-          <p className="text-2xl font-bold text-white">₨ {fmt(latest)}</p>
+          <p className="text-2xl font-bold text-white">₨ {fmt(stats.latest)}</p>
           <p className="mt-1 text-xs text-gray-500">Fetch prices again to start tracking history</p>
         </div>
       ) : (
-        <div
-          className="relative px-2 py-2"
-          onMouseLeave={() => setHoverIdx(null)}
-        >
-          {hoverIdx !== null && (
-            <div
-              className="pointer-events-none absolute z-10 rounded-lg border border-gray-700 bg-gray-950/95 px-3 py-2 shadow-lg backdrop-blur-sm"
-              style={{
-                left: `${(pts[hoverIdx].x / W) * 100}%`,
-                top: 8,
-                transform:
-                  pts[hoverIdx].x > W * 0.72
-                    ? 'translateX(-100%)'
-                    : pts[hoverIdx].x < W * 0.28
-                      ? 'translateX(0)'
-                      : 'translateX(-50%)',
-              }}
-            >
-              <p className="text-xs font-medium text-gray-300">{fmtDateFull(data[hoverIdx].sess)}</p>
-              <div className="mt-1.5 space-y-1">
-                <div className="flex items-center justify-between gap-6 text-xs">
-                  <span className="flex items-center gap-1.5 text-gray-400">
-                    <span className="inline-block h-0.5 w-2.5 rounded bg-emerald-400" />
-                    As held
-                  </span>
-                  <span className="font-semibold text-emerald-300">₨ {fmt(values[hoverIdx])}</span>
-                </div>
-                <div className="flex items-center justify-between gap-6 text-xs">
-                  <span className="flex items-center gap-1.5 text-gray-400">
-                    <span className="inline-block w-2.5 border-t border-dashed border-sky-400" />
-                    Today&apos;s holdings
-                  </span>
-                  <span className="font-semibold text-sky-300">₨ {fmt(currentAssetValues[hoverIdx])}</span>
-                </div>
-              </div>
-            </div>
-          )}
-          <svg
-            viewBox={`0 0 ${W} ${H}`}
-            className="w-full cursor-crosshair"
-            style={{ height: '200px' }}
-            onMouseMove={e => {
-              const rect = e.currentTarget.getBoundingClientRect()
-              const mouseX = ((e.clientX - rect.left) / rect.width) * W
-              if (mouseX < padL || mouseX > W - padR) {
-                setHoverIdx(null)
-                return
-              }
-              const t = (mouseX - padL) / chartW
-              const idx = Math.round(t * (data.length - 1))
-              setHoverIdx(Math.max(0, Math.min(data.length - 1, idx)))
-            }}
-            onMouseLeave={() => setHoverIdx(null)}
-          >
-            {ySteps.map(({ y, v }, i) => (
-              <g key={i}>
-                <line x1={padL} y1={y} x2={W - padR} y2={y} stroke="#1f2937" strokeWidth="1" />
-                <text x={padL - 6} y={y + 4} textAnchor="end" fill="#4b5563" fontSize="9">
-                  {fmtCompact(v)}
-                </text>
-              </g>
-            ))}
-            <path d={areaD} fill={areaColor} />
-            <polyline
-              points={currentPolyline}
-              fill="none"
-              stroke="#38bdf8"
-              strokeWidth="2"
-              strokeDasharray="6 4"
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-            <polyline points={polyline} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
-            {hoverIdx !== null && (
-              <>
-                <line
-                  x1={pts[hoverIdx].x.toFixed(1)}
-                  y1={padT}
-                  x2={pts[hoverIdx].x.toFixed(1)}
-                  y2={bottomY}
-                  stroke="#6b7280"
-                  strokeWidth="1"
-                  strokeDasharray="4 3"
-                />
-                <circle cx={pts[hoverIdx].x.toFixed(1)} cy={pts[hoverIdx].y.toFixed(1)} r="4" fill={color} stroke="#111827" strokeWidth="2" />
-                <circle
-                  cx={currentPts[hoverIdx].x.toFixed(1)}
-                  cy={currentPts[hoverIdx].y.toFixed(1)}
-                  r="3.5"
-                  fill="#38bdf8"
-                  stroke="#111827"
-                  strokeWidth="2"
-                />
-              </>
-            )}
-            {hoverIdx === null && (
-              <>
-                <circle cx={lastPt.x.toFixed(1)} cy={lastPt.y.toFixed(1)} r="4" fill={color} />
-                <circle
-                  cx={currentPts[currentPts.length - 1].x.toFixed(1)}
-                  cy={currentPts[currentPts.length - 1].y.toFixed(1)}
-                  r="3"
-                  fill="#38bdf8"
-                />
-              </>
-            )}
-            <rect
-              x={padL}
-              y={padT}
-              width={chartW}
-              height={chartH}
-              fill="transparent"
-              pointerEvents="all"
-            />
-            {labelIndices.map(i => (
-              <text key={i} x={pts[i].x.toFixed(1)} y={H - 4} textAnchor="middle" fill="#4b5563" fontSize="9">
-                {fmtDate(data[i].sess)}
-              </text>
-            ))}
-          </svg>
+        <div className="h-52 px-3 py-4">
+          <Line data={chart} options={options} />
         </div>
       )}
     </div>
