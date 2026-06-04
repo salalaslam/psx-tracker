@@ -71,6 +71,90 @@ function accountLabel(account: string): string {
   return account.charAt(0).toUpperCase() + account.slice(1)
 }
 
+type ChartTimeRange = '1d' | '1w' | '15d' | '30d' | '3m' | '6m' | '1y' | 'all'
+
+const TIME_RANGE_OPTIONS: { value: ChartTimeRange; label: string }[] = [
+  { value: '1d', label: 'Day' },
+  { value: '1w', label: 'Week' },
+  { value: '15d', label: '15D' },
+  { value: '30d', label: '30D' },
+  { value: '3m', label: '3M' },
+  { value: '6m', label: '6M' },
+  { value: '1y', label: '1Y' },
+  { value: 'all', label: 'All' },
+]
+
+function dayKey(iso: string): string {
+  return iso.slice(0, 10)
+}
+
+function shiftDay(day: string, deltaDays: number): string {
+  const date = new Date(`${day}T00:00:00`)
+  date.setDate(date.getDate() + deltaDays)
+  return date.toISOString().slice(0, 10)
+}
+
+function shiftMonth(day: string, deltaMonths: number): string {
+  const date = new Date(`${day}T00:00:00`)
+  date.setMonth(date.getMonth() + deltaMonths)
+  return date.toISOString().slice(0, 10)
+}
+
+function latestDayInSeries(data: CombinedHoldingPriceSeries[]): string | null {
+  let maxDay: string | null = null
+  for (const stock of data) {
+    for (const point of stock.points) {
+      const day = dayKey(point.fetched_at)
+      if (maxDay === null || day > maxDay) maxDay = day
+    }
+  }
+  return maxDay
+}
+
+function filterSeriesByRange(
+  data: CombinedHoldingPriceSeries[],
+  range: ChartTimeRange,
+): CombinedHoldingPriceSeries[] {
+  if (range === 'all') return data
+
+  const maxDay = latestDayInSeries(data)
+  if (!maxDay) return data
+
+  let cutoffDay: string | null = null
+  switch (range) {
+    case '1d':
+      cutoffDay = maxDay
+      break
+    case '1w':
+      cutoffDay = shiftDay(maxDay, -6)
+      break
+    case '15d':
+      cutoffDay = shiftDay(maxDay, -14)
+      break
+    case '30d':
+      cutoffDay = shiftDay(maxDay, -29)
+      break
+    case '3m':
+      cutoffDay = shiftMonth(maxDay, -3)
+      break
+    case '6m':
+      cutoffDay = shiftMonth(maxDay, -6)
+      break
+    case '1y':
+      cutoffDay = shiftMonth(maxDay, -12)
+      break
+  }
+
+  return data.map(stock => ({
+    ...stock,
+    points: stock.points.filter(point => {
+      const day = dayKey(point.fetched_at)
+      if (range === '1d') return day === maxDay
+      return cutoffDay !== null && day >= cutoffDay
+    }),
+  }))
+}
+
 function CombinedHistoryPage() {
   const { series } = Route.useLoaderData()
   const chartable = series.filter(s => s.points.length >= 2)
@@ -114,6 +198,7 @@ function CombinedHistoryPage() {
 function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
   const chartRef = useRef<ChartJS<'line'>>(null)
   const [zoomReady, setZoomReady] = useState(false)
+  const [timeRange, setTimeRange] = useState<ChartTimeRange>('all')
 
   useEffect(() => {
     let cancelled = false
@@ -124,6 +209,15 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    chartRef.current?.resetZoom()
+  }, [timeRange])
+
+  const filteredData = useMemo(
+    () => filterSeriesByRange(data, timeRange),
+    [data, timeRange],
+  )
 
   const setAllDatasetsVisible = (visible: boolean) => {
     const chartInstance = chartRef.current
@@ -136,18 +230,18 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
 
   const chart = useMemo(() => {
     const days = new Set<string>()
-    for (const stock of data) {
+    for (const stock of filteredData) {
       for (const point of stock.points) {
-        days.add(point.fetched_at.slice(0, 10))
+        days.add(dayKey(point.fetched_at))
       }
     }
     const labels = [...days].sort()
     const indexByDay = new Map(labels.map((day, index) => [day, index]))
 
-    const datasets = data.map((stock, index) => {
+    const datasets = filteredData.map((stock, index) => {
       const values: Array<number | null> = Array.from({ length: labels.length }, () => null)
       for (const point of stock.points) {
-        const dayIndex = indexByDay.get(point.fetched_at.slice(0, 10))
+        const dayIndex = indexByDay.get(dayKey(point.fetched_at))
         if (dayIndex !== undefined) values[dayIndex] = point.price
       }
 
@@ -165,14 +259,50 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
     })
 
     return { labels, datasets }
-  }, [data])
+  }, [filteredData])
 
-  if (data.length === 0 || chart.labels.length === 0) {
+  if (data.length === 0) {
     return (
       <div className="rounded-xl border border-gray-800 bg-gray-900 px-6 py-10 text-center">
         <p className="text-sm text-gray-400">
           Not enough price snapshots yet. Fetch latest prices again after recording holdings.
         </p>
+      </div>
+    )
+  }
+
+  if (chart.labels.length === 0) {
+    return (
+      <div className="overflow-hidden rounded-xl border border-gray-800 bg-gray-900">
+        <div className="border-b border-gray-800 px-6 py-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <h2 className="text-base font-semibold text-gray-200">Current Holdings Price Movement</h2>
+              <p className="mt-0.5 text-xs text-gray-500">
+                Individual stock prices, combined across all accounts
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            {TIME_RANGE_OPTIONS.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => setTimeRange(option.value)}
+                className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                  timeRange === option.value
+                    ? 'border-emerald-600 bg-emerald-600/20 text-emerald-300'
+                    : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-white'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="px-6 py-10 text-center">
+          <p className="text-sm text-gray-400">No price snapshots in the selected range.</p>
+        </div>
       </div>
     )
   }
@@ -292,9 +422,25 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
               </button>
             </div>
             <div className="text-xs text-gray-500">
-              {chart.labels.length} trading days with stored snapshots
+              {chart.labels.length} trading day{chart.labels.length === 1 ? '' : 's'} in selected range
             </div>
           </div>
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {TIME_RANGE_OPTIONS.map(option => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => setTimeRange(option.value)}
+              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition ${
+                timeRange === option.value
+                  ? 'border-emerald-600 bg-emerald-600/20 text-emerald-300'
+                  : 'border-gray-700 bg-gray-800 text-gray-300 hover:border-gray-600 hover:bg-gray-700 hover:text-white'
+              }`}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
       </div>
 
