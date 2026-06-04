@@ -386,7 +386,7 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
         </div>
       </div>
 
-      <div className="h-[28rem] px-3 py-4">
+      <div className="h-[42rem] px-3 py-4">
         <Line ref={chartRef} data={chart} options={options} />
       </div>
     </div>
