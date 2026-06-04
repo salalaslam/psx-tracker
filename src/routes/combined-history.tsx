@@ -285,7 +285,7 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
     maintainAspectRatio: false,
     animation: false,
     interaction: {
-      mode: 'index',
+      mode: 'nearest',
       intersect: false,
     },
     plugins: {
