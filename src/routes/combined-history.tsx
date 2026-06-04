@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import {
   CategoryScale,
   Chart as ChartJS,
@@ -15,18 +15,6 @@ import { serverGetCombinedHoldingPriceHistory } from '../serverFns'
 import type { CombinedHoldingPriceSeries } from '../db.server'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend)
-
-let zoomPluginReady: Promise<void> | null = null
-
-function ensureZoomPlugin(): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve()
-  if (!zoomPluginReady) {
-    zoomPluginReady = import('chartjs-plugin-zoom').then(({ default: zoomPlugin }) => {
-      ChartJS.register(zoomPlugin)
-    })
-  }
-  return zoomPluginReady
-}
 
 export const Route = createFileRoute('/combined-history')({
   loader: async () => {
@@ -197,22 +185,7 @@ function CombinedHistoryPage() {
 
 function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
   const chartRef = useRef<ChartJS<'line'>>(null)
-  const [zoomReady, setZoomReady] = useState(false)
   const [timeRange, setTimeRange] = useState<ChartTimeRange>('all')
-
-  useEffect(() => {
-    let cancelled = false
-    void ensureZoomPlugin().then(() => {
-      if (!cancelled) setZoomReady(true)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    chartRef.current?.resetZoom()
-  }, [timeRange])
 
   const filteredData = useMemo(
     () => filterSeriesByRange(data, timeRange),
@@ -340,27 +313,6 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
           label: item => `${item.dataset.label}: ₨ ${fmt(Number(item.parsed.y))}`,
         },
       },
-      zoom: {
-        limits: {
-          x: { minRange: 7 },
-          y: { minRange: 1 },
-        },
-        pan: {
-          enabled: true,
-          mode: 'xy',
-        },
-        zoom: {
-          wheel: { enabled: true },
-          pinch: { enabled: true },
-          drag: {
-            enabled: true,
-            backgroundColor: 'rgba(52, 211, 153, 0.12)',
-            borderColor: 'rgba(52, 211, 153, 0.6)',
-            borderWidth: 1,
-          },
-          mode: 'xy',
-        },
-      },
     },
     scales: {
       x: {
@@ -396,9 +348,6 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
           </div>
           <div className="flex flex-col items-end gap-2">
             <div className="flex flex-wrap items-center justify-end gap-2">
-              <span className="hidden text-xs text-gray-500 sm:inline">
-                Scroll to zoom · drag to select · drag chart to pan
-              </span>
               <button
                 type="button"
                 onClick={() => setAllDatasetsVisible(true)}
@@ -412,13 +361,6 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
                 className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white"
               >
                 Hide all
-              </button>
-              <button
-                type="button"
-                onClick={() => chartRef.current?.resetZoom()}
-                className="rounded-lg border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition hover:border-gray-600 hover:bg-gray-700 hover:text-white"
-              >
-                Reset zoom
               </button>
             </div>
             <div className="text-xs text-gray-500">
@@ -444,14 +386,8 @@ function CombinedPriceChart({ data }: { data: CombinedHoldingPriceSeries[] }) {
         </div>
       </div>
 
-      <div className="h-[42rem] px-3 py-4">
-        {zoomReady ? (
-          <Line ref={chartRef} data={chart} options={options} />
-        ) : (
-          <div className="flex h-full items-center justify-center text-sm text-gray-500">
-            Loading chart…
-          </div>
-        )}
+      <div className="h-[28rem] px-3 py-4">
+        <Line ref={chartRef} data={chart} options={options} />
       </div>
     </div>
   )
