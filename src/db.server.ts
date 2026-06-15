@@ -764,6 +764,15 @@ export function getDividends(account: string): Dividend[] {
   `).all(account.trim().toLowerCase()) as Dividend[]
 }
 
+export function getAllDividends(): Dividend[] {
+  return db.prepare(`
+    SELECT id, account, event_id, symbol, security_name, financial_year,
+           gross_amount, net_amount, status, payment_date, shares
+    FROM dividends
+    ORDER BY payment_date DESC, account ASC, symbol ASC, id DESC
+  `).all() as Dividend[]
+}
+
 export function getDividendSummary(account: string): DividendSummary {
   const row = db.prepare(`
     SELECT COUNT(1) AS count,

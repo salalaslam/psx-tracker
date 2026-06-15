@@ -10,6 +10,7 @@ import {
   getAccountCharges,
   getAllAccounts,
   getAllDividendTotals,
+  getAllDividends,
   getAllSymbols,
   getCombinedHoldingPriceHistory,
   getDividendSummary,
@@ -27,6 +28,7 @@ import {
 } from './db.server'
 import { isAccountChargeCategory } from './accountCharges'
 import { parseDividendPaste, parsePaymentDate } from './dividends'
+import { buildCombinedDividendTaxReport } from './dividendTax'
 import { fetchAllPrices, fetchAndStoreSectors, fetchPsxQuote } from './psx.server'
 
 async function ensureMissingSectors(): Promise<{ fetched: number; failed: string[] }> {
@@ -235,6 +237,10 @@ export const serverGetDividends = createServerFn({ method: 'GET' })
 
 export const serverGetAllDividendTotals = createServerFn({ method: 'GET' }).handler(
   async () => getAllDividendTotals(),
+)
+
+export const serverGetCombinedDividendTaxReport = createServerFn({ method: 'GET' }).handler(
+  async () => buildCombinedDividendTaxReport(getAllDividends()),
 )
 
 export const serverAddDividend = createServerFn({ method: 'POST' })
