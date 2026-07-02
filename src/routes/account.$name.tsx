@@ -5,6 +5,7 @@ import {
   serverEnsureSectors,
   serverGetAllAccounts,
   serverGetAccountCharges,
+  serverGetCorporateEvents,
   serverGetDividends,
   serverGetHoldings,
   serverGetTransactions,
@@ -15,19 +16,32 @@ import { transactionTotal, transactionTradeValue } from '../fees'
 import { AllocationDonut } from '../components/AllocationDonut'
 import { AccountTransactions, type TransactionRow } from '../components/AccountTransactions'
 import { AccountCharges } from '../components/AccountCharges'
+import { AccountCorporateEvents } from '../components/AccountCorporateEvents'
 import { AccountDividends } from '../components/AccountDividends'
 
+const ACCOUNT_TABS = ['portfolio', 'transactions', 'dividends', 'charges', 'events'] as const
+type AccountTab = (typeof ACCOUNT_TABS)[number]
+
+function parseAccountTab(value: unknown): AccountTab {
+  const tab = String(value ?? 'portfolio')
+  return ACCOUNT_TABS.includes(tab as AccountTab) ? (tab as AccountTab) : 'portfolio'
+}
+
 export const Route = createFileRoute('/account/$name')({
+  validateSearch: (search: Record<string, unknown>) => ({
+    tab: parseAccountTab(search.tab),
+  }),
   loader: async ({ params }) => {
     await serverEnsureSectors()
 
     const accounts = await serverGetAllAccounts()
     if (!accounts.includes(params.name)) throw notFound()
-    const [holdings, transactions, dividendData, chargeData] = await Promise.all([
+    const [holdings, transactions, dividendData, chargeData, corporateEvents] = await Promise.all([
       serverGetHoldings({ data: params.name }),
       serverGetTransactions({ data: params.name }),
       serverGetDividends({ data: params.name }),
       serverGetAccountCharges({ data: params.name }),
+      serverGetCorporateEvents({ data: params.name }),
     ])
     const transactionRows: TransactionRow[] = transactions.map(t => ({
       ...t,
@@ -48,6 +62,7 @@ export const Route = createFileRoute('/account/$name')({
       dividendSummary: dividendData.summary,
       accountCharges: chargeData.charges,
       accountChargeSummary: chargeData.summary,
+      corporateEvents,
       account: params.name,
     }
   },
@@ -58,8 +73,6 @@ function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
-type AccountTab = 'portfolio' | 'transactions' | 'dividends' | 'charges'
-
 function AccountPage() {
   const {
     holdings,
@@ -68,8 +81,10 @@ function AccountPage() {
     dividendSummary,
     accountCharges,
     accountChargeSummary,
+    corporateEvents,
     account,
   } = Route.useLoaderData()
+  const { tab: activeTab } = Route.useSearch()
   const router = useRouter()
   const name = account.charAt(0).toUpperCase() + account.slice(1)
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
@@ -81,7 +96,6 @@ function AccountPage() {
   const [saving, setSaving] = useState(false)
   const [formError, setFormError] = useState<string | null>(null)
   const [formSuccess, setFormSuccess] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<AccountTab>('portfolio')
   const [sortColumn, setSortColumn] = useState<string | null>(null)
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc')
 
@@ -225,31 +239,40 @@ function AccountPage() {
         <p className="mt-1 text-sm text-gray-400">
           {holdings.length} positions · {transactions.length} transactions · {dividends.length}{' '}
           dividends · {accountCharges.length} charges
+          {corporateEvents.length > 0 ? ` · ${corporateEvents.length} events` : ''}
         </p>
       </div>
 
       <div className="flex w-fit gap-1 rounded-lg border border-gray-800 bg-gray-900/80 p-1">
-        <TabButton active={activeTab === 'portfolio'} onClick={() => setActiveTab('portfolio')}>
+        <TabLink account={account} tab="portfolio" active={activeTab === 'portfolio'}>
           Portfolio
-        </TabButton>
-        <TabButton active={activeTab === 'transactions'} onClick={() => setActiveTab('transactions')}>
+        </TabLink>
+        <TabLink account={account} tab="transactions" active={activeTab === 'transactions'}>
           Transactions
           <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
             {transactions.length}
           </span>
-        </TabButton>
-        <TabButton active={activeTab === 'dividends'} onClick={() => setActiveTab('dividends')}>
+        </TabLink>
+        <TabLink account={account} tab="dividends" active={activeTab === 'dividends'}>
           Dividends
           <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
             {dividends.length}
           </span>
-        </TabButton>
-        <TabButton active={activeTab === 'charges'} onClick={() => setActiveTab('charges')}>
+        </TabLink>
+        <TabLink account={account} tab="charges" active={activeTab === 'charges'}>
           Charges
           <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
             {accountCharges.length}
           </span>
-        </TabButton>
+        </TabLink>
+        <TabLink account={account} tab="events" active={activeTab === 'events'}>
+          Events
+          {corporateEvents.length > 0 && (
+            <span className="ml-1.5 rounded-full bg-gray-800 px-1.5 py-0.5 text-[10px] font-normal text-gray-400">
+              {corporateEvents.length}
+            </span>
+          )}
+        </TabLink>
       </div>
 
       {activeTab === 'transactions' ? (
@@ -266,6 +289,12 @@ function AccountPage() {
           account={account}
           charges={accountCharges}
           summary={accountChargeSummary}
+        />
+      ) : activeTab === 'events' ? (
+        <AccountCorporateEvents
+          account={account}
+          events={corporateEvents}
+          holdings={holdings}
         />
       ) : (
         <>
@@ -304,13 +333,12 @@ function AccountPage() {
               {accountChargeSummary.net >= 0 ? '+' : ''}₨ {fmt(accountChargeSummary.net)}
             </span>
             {' · '}
-            <button
-              type="button"
-              onClick={() => setActiveTab('charges')}
+            <a
+              href={`/account/${account}?tab=charges`}
               className="text-emerald-500/90 hover:text-emerald-400"
             >
               View charges
-            </button>
+            </a>
           </p>
         )}
         <AllocationDonut
@@ -602,19 +630,21 @@ function AccountPage() {
   )
 }
 
-function TabButton({
+function TabLink({
+  account,
+  tab,
   active,
-  onClick,
   children,
 }: {
+  account: string
+  tab: AccountTab
   active: boolean
-  onClick: () => void
   children: ReactNode
 }) {
+  const href = tab === 'portfolio' ? `/account/${account}` : `/account/${account}?tab=${tab}`
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <a
+      href={href}
       className={`rounded-md px-4 py-2 text-sm font-medium transition-colors ${
         active
           ? 'bg-gray-800 text-white shadow-sm'
@@ -622,7 +652,7 @@ function TabButton({
       }`}
     >
       {children}
-    </button>
+    </a>
   )
 }
 
