@@ -52,7 +52,7 @@ In `src/serverFns.ts`:
 
 ```typescript
 export const serverGetPendingDividends = createServerFn({ method: 'GET' })
-  .inputValidator((account: unknown) => String(account))
+  .validator((account: unknown) => String(account))
   .handler(async ({ data }) => {
     const account = String(data).trim().toLowerCase()
     try {
