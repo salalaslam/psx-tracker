@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { isAccountChargeCategory } from './accountCharges'
 import { resolveTradeFees } from './fees'
 import type { ParsedDividendRow } from './dividends'
+import { calcSplitAdjustment } from './corporateEvents'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.resolve(__dirname, '../../data/investments.db')
@@ -101,6 +102,25 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_account_charges_account_date
     ON account_charges(account, charged_at DESC);
+
+  CREATE TABLE IF NOT EXISTS corporate_events (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    account         TEXT    NOT NULL,
+    symbol          TEXT    NOT NULL,
+    event_type      TEXT    NOT NULL CHECK (event_type IN ('split')),
+    effective_date  TEXT    NOT NULL,
+    ratio_from      INTEGER NOT NULL,
+    ratio_to        INTEGER NOT NULL,
+    shares_before   INTEGER NOT NULL,
+    shares_after    INTEGER NOT NULL,
+    cost_avg_before REAL    NOT NULL,
+    cost_avg_after  REAL    NOT NULL,
+    notes           TEXT,
+    FOREIGN KEY(account) REFERENCES accounts(name)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_corporate_events_account_date
+    ON corporate_events(account, effective_date DESC);
 `)
 
 function migrateTransactionsFeeColumns(): void {
@@ -1031,6 +1051,200 @@ export function deleteDividend(id: number, account: string): boolean {
     'DELETE FROM dividends WHERE id = ? AND account = ?',
   ).run(id, account.trim().toLowerCase())
   return result.changes > 0
+}
+
+// ── Corporate events (splits, etc.) ─────────────────────────────────────────
+
+export interface CorporateEvent {
+  id: number
+  account: string
+  symbol: string
+  event_type: 'split'
+  effective_date: string
+  ratio_from: number
+  ratio_to: number
+  shares_before: number
+  shares_after: number
+  cost_avg_before: number
+  cost_avg_after: number
+  notes: string | null
+}
+
+export interface AddCorporateEventInput {
+  account: string
+  symbol: string
+  event_type: 'split'
+  effective_date: string
+  ratio_from: number
+  ratio_to: number
+  notes?: string | null
+}
+
+function getHoldingForEvent(
+  account: string,
+  symbol: string,
+): Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined {
+  return db.prepare(
+    `SELECT id, shares, cost_avg, total_invested
+     FROM holdings WHERE account = ? AND symbol = ?`,
+  ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+}
+
+export function getCorporateEvents(account: string): CorporateEvent[] {
+  return db.prepare(`
+    SELECT id, account, symbol, event_type, effective_date,
+           ratio_from, ratio_to, shares_before, shares_after,
+           cost_avg_before, cost_avg_after, notes
+    FROM corporate_events
+    WHERE account = ?
+    ORDER BY effective_date DESC, id DESC
+  `).all(account.trim().toLowerCase()) as CorporateEvent[]
+}
+
+function validateCorporateEventInput(input: AddCorporateEventInput): string | null {
+  const account = input.account.trim().toLowerCase()
+  const symbol = input.symbol.trim().toUpperCase()
+  const effectiveDate = input.effective_date.trim()
+
+  if (!account) return 'Account is required'
+  if (!symbol) return 'Symbol is required'
+  if (input.event_type !== 'split') return 'Only split events are supported'
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) {
+    return 'Effective date must be YYYY-MM-DD'
+  }
+  if (!Number.isInteger(input.ratio_from) || input.ratio_from <= 0) {
+    return 'Ratio "from" must be a positive integer'
+  }
+  if (!Number.isInteger(input.ratio_to) || input.ratio_to <= 0) {
+    return 'Ratio "to" must be a positive integer'
+  }
+
+  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)) {
+    return 'Account does not exist'
+  }
+
+  const holding = getHoldingForEvent(account, symbol)
+  if (!holding || holding.shares <= 0) {
+    return `No holding for ${symbol} in this account`
+  }
+
+  return null
+}
+
+export function addCorporateEvent(
+  input: AddCorporateEventInput,
+): { ok: boolean; error?: string; id?: number } {
+  const err = validateCorporateEventInput(input)
+  if (err) return { ok: false, error: err }
+
+  const account = input.account.trim().toLowerCase()
+  const symbol = input.symbol.trim().toUpperCase()
+  const holding = getHoldingForEvent(account, symbol)!
+  const notes = input.notes?.trim() || null
+
+  let adjustment
+  try {
+    adjustment = calcSplitAdjustment(
+      holding.shares,
+      holding.cost_avg,
+      input.ratio_from,
+      input.ratio_to,
+    )
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'Invalid split ratio' }
+  }
+
+  const tx = db.transaction(() => {
+    const result = db.prepare(`
+      INSERT INTO corporate_events (
+        account, symbol, event_type, effective_date,
+        ratio_from, ratio_to, shares_before, shares_after,
+        cost_avg_before, cost_avg_after, notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      account,
+      symbol,
+      'split',
+      input.effective_date.trim(),
+      input.ratio_from,
+      input.ratio_to,
+      adjustment.sharesBefore,
+      adjustment.sharesAfter,
+      adjustment.costAvgBefore,
+      adjustment.costAvgAfter,
+      notes,
+    )
+
+    db.prepare(
+      `UPDATE holdings SET shares = ?, cost_avg = ?, total_invested = ? WHERE id = ?`,
+    ).run(
+      adjustment.sharesAfter,
+      adjustment.costAvgAfter,
+      adjustment.totalInvested,
+      holding.id,
+    )
+
+    return Number(result.lastInsertRowid)
+  })
+
+  try {
+    const id = tx()
+    return { ok: true, id }
+  } catch {
+    return { ok: false, error: 'Could not record corporate event' }
+  }
+}
+
+export function deleteCorporateEvent(
+  id: number,
+  account: string,
+): { ok: boolean; error?: string } {
+  const acct = account.trim().toLowerCase()
+  const event = db.prepare(`
+    SELECT id, account, symbol, shares_before, shares_after,
+           cost_avg_before, cost_avg_after
+    FROM corporate_events
+    WHERE id = ? AND account = ?
+  `).get(id, acct) as
+    | Pick<
+        CorporateEvent,
+        | 'id'
+        | 'account'
+        | 'symbol'
+        | 'shares_before'
+        | 'shares_after'
+        | 'cost_avg_before'
+        | 'cost_avg_after'
+      >
+    | undefined
+
+  if (!event) return { ok: false, error: 'Event not found' }
+
+  const holding = getHoldingForEvent(acct, event.symbol)
+  if (!holding) {
+    return { ok: false, error: 'Holding no longer exists; cannot reverse event' }
+  }
+  if (holding.shares !== event.shares_after) {
+    return {
+      ok: false,
+      error: `Current holding (${holding.shares} shares) no longer matches post-event count (${event.shares_after}); adjust manually`,
+    }
+  }
+
+  const totalInvested = event.shares_before * event.cost_avg_before
+  const tx = db.transaction(() => {
+    db.prepare(
+      `UPDATE holdings SET shares = ?, cost_avg = ?, total_invested = ? WHERE id = ?`,
+    ).run(event.shares_before, event.cost_avg_before, totalInvested, holding.id)
+    db.prepare('DELETE FROM corporate_events WHERE id = ? AND account = ?').run(id, acct)
+  })
+
+  try {
+    tx()
+    return { ok: true }
+  } catch {
+    return { ok: false, error: 'Could not delete corporate event' }
+  }
 }
 
 // ── Account charges (non-trade cash) ────────────────────────────────────────

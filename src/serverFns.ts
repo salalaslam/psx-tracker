@@ -1,10 +1,12 @@
 import { createServerFn } from '@tanstack/react-start'
 import {
   addAccountCharge,
+  addCorporateEvent,
   addDividend,
   addTrade,
   createAccount,
   deleteAccountCharge,
+  deleteCorporateEvent,
   deleteDividend,
   getAccountChargeSummary,
   getAccountCharges,
@@ -13,6 +15,7 @@ import {
   getAllDividends,
   getAllSymbols,
   getCombinedHoldingPriceHistory,
+  getCorporateEvents,
   getDividendSummary,
   getDividends,
   getHoldings,
@@ -39,11 +42,11 @@ async function ensureMissingSectors(): Promise<{ fetched: number; failed: string
 }
 
 export const serverGetHoldings = createServerFn({ method: 'GET' })
-  .inputValidator((account: unknown) => String(account))
+  .validator((account: unknown) => String(account))
   .handler(async ({ data }) => getHoldings(data))
 
 export const serverGetTransactions = createServerFn({ method: 'GET' })
-  .inputValidator((account: unknown) => String(account))
+  .validator((account: unknown) => String(account))
   .handler(async ({ data }) => getTransactions(data))
 
 export const serverGetAllAccounts = createServerFn({ method: 'GET' }).handler(
@@ -51,7 +54,7 @@ export const serverGetAllAccounts = createServerFn({ method: 'GET' }).handler(
 )
 
 export const serverCreateAccount = createServerFn({ method: 'POST' })
-  .inputValidator((name: unknown) => {
+  .validator((name: unknown) => {
     const str = String(name).trim()
     if (str.length < 1 || str.length > 50) throw new Error('Account name must be 1-50 characters')
     return str
@@ -59,7 +62,7 @@ export const serverCreateAccount = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => createAccount(data))
 
 export const serverAddTrade = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as {
       account?: unknown
       symbol?: unknown
@@ -136,7 +139,7 @@ export const serverGetLatestPrices = createServerFn({ method: 'GET' }).handler(
 )
 
 export const serverGetPriceHistory = createServerFn({ method: 'GET' })
-  .inputValidator((symbol: unknown) => String(symbol))
+  .validator((symbol: unknown) => String(symbol))
   .handler(async ({ data }) => getPriceHistory(data))
 
 export const serverGetCombinedHoldingPriceHistory = createServerFn({ method: 'GET' }).handler(
@@ -178,14 +181,14 @@ export const serverGetPortfolioHistory = createServerFn({ method: 'GET' }).handl
 )
 
 export const serverGetAccountCharges = createServerFn({ method: 'GET' })
-  .inputValidator((account: unknown) => String(account))
+  .validator((account: unknown) => String(account))
   .handler(async ({ data }) => ({
     charges: getAccountCharges(data),
     summary: getAccountChargeSummary(data),
   }))
 
 export const serverAddAccountCharge = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as Record<string, unknown>
     const account = String(parsed.account ?? '').trim().toLowerCase()
     const category = String(parsed.category ?? '').trim()
@@ -214,7 +217,7 @@ export const serverAddAccountCharge = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => addAccountCharge(data))
 
 export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as { id?: unknown; account?: unknown }
     const id = Number(parsed.id)
     const account = String(parsed.account ?? '').trim().toLowerCase()
@@ -229,7 +232,7 @@ export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
   })
 
 export const serverGetDividends = createServerFn({ method: 'GET' })
-  .inputValidator((account: unknown) => String(account))
+  .validator((account: unknown) => String(account))
   .handler(async ({ data }) => ({
     dividends: getDividends(data),
     summary: getDividendSummary(data),
@@ -244,7 +247,7 @@ export const serverGetCombinedDividendTaxReport = createServerFn({ method: 'GET'
 )
 
 export const serverAddDividend = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as Record<string, unknown>
     const account = String(parsed.account ?? '').trim().toLowerCase()
     const event_id = String(parsed.event_id ?? '').trim()
@@ -295,7 +298,7 @@ export const serverAddDividend = createServerFn({ method: 'POST' })
   .handler(async ({ data }) => addDividend(data))
 
 export const serverImportDividends = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as { account?: unknown; text?: unknown }
     const account = String(parsed.account ?? '').trim().toLowerCase()
     const text = String(parsed.text ?? '').trim()
@@ -321,7 +324,7 @@ export const serverImportDividends = createServerFn({ method: 'POST' })
   })
 
 export const serverDeleteDividend = createServerFn({ method: 'POST' })
-  .inputValidator((input: unknown) => {
+  .validator((input: unknown) => {
     const parsed = (input ?? {}) as { id?: unknown; account?: unknown }
     const id = Number(parsed.id)
     const account = String(parsed.account ?? '').trim().toLowerCase()
@@ -334,3 +337,57 @@ export const serverDeleteDividend = createServerFn({ method: 'POST' })
     if (!ok) throw new Error('Dividend not found')
     return { ok: true }
   })
+
+export const serverGetCorporateEvents = createServerFn({ method: 'GET' })
+  .validator((account: unknown) => String(account))
+  .handler(async ({ data }) => getCorporateEvents(data))
+
+export const serverAddCorporateEvent = createServerFn({ method: 'POST' })
+  .validator((input: unknown) => {
+    const parsed = (input ?? {}) as Record<string, unknown>
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    const symbol = String(parsed.symbol ?? '').trim().toUpperCase()
+    const event_type = String(parsed.event_type ?? 'split').trim().toLowerCase()
+    const effective_date = String(parsed.effective_date ?? '').trim()
+    const ratio_from = Number(parsed.ratio_from)
+    const ratio_to = Number(parsed.ratio_to)
+    const notes =
+      parsed.notes != null && String(parsed.notes).trim() !== ''
+        ? String(parsed.notes).trim()
+        : null
+
+    if (!account) throw new Error('Account is required')
+    if (!symbol) throw new Error('Symbol is required')
+    if (event_type !== 'split') throw new Error('Only split events are supported')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effective_date)) {
+      throw new Error('Effective date is required (YYYY-MM-DD)')
+    }
+    if (!Number.isInteger(ratio_from) || ratio_from <= 0) {
+      throw new Error('Ratio "from" must be a positive integer')
+    }
+    if (!Number.isInteger(ratio_to) || ratio_to <= 0) {
+      throw new Error('Ratio "to" must be a positive integer')
+    }
+
+    return {
+      account,
+      symbol,
+      event_type: 'split' as const,
+      effective_date,
+      ratio_from,
+      ratio_to,
+      notes,
+    }
+  })
+  .handler(async ({ data }) => addCorporateEvent(data))
+
+export const serverDeleteCorporateEvent = createServerFn({ method: 'POST' })
+  .validator((input: unknown) => {
+    const parsed = (input ?? {}) as { id?: unknown; account?: unknown }
+    const id = Number(parsed.id)
+    const account = String(parsed.account ?? '').trim().toLowerCase()
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Invalid event id')
+    if (!account) throw new Error('Account is required')
+    return { id, account }
+  })
+  .handler(async ({ data }) => deleteCorporateEvent(data.id, data.account))
