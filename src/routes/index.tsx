@@ -370,7 +370,7 @@ function Dashboard() {
       {/* Portfolio value chart */}
       <PortfolioChart data={portfolioHistory} />
 
-      {/* Holdings overview (all accounts combined, by current P&L) */}
+      {/* Holdings overview (all accounts combined, by return %) */}
       <TopMovers holdings={allHoldings} dividendBySymbol={dividendTotals.by_symbol} />
     </div>
   )
@@ -574,7 +574,7 @@ function TopMovers({
   holdings: HoldingWithPrice[]
   dividendBySymbol: Record<string, { total_net: number; count: number }>
 }) {
-  const [sortCol, setSortCol] = useState<SortCol>('gainLoss')
+  const [sortCol, setSortCol] = useState<SortCol>('pct')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
   const [visibleColumns, setVisibleColumns] = useState(defaultHoldingColumnVisibility)
 
