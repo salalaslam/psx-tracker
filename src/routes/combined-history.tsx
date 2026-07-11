@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute } from '@tanstack/react-router'
 import { useMemo, useRef, useState } from 'react'
 import {
   CategoryScale,
@@ -151,12 +151,6 @@ function CombinedHistoryPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <Link to="/" className="text-sm text-gray-400 hover:text-gray-200">
-          ← Back
-        </Link>
-      </div>
-
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Combined Holding Price History</h1>
