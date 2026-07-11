@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import type { HoldingWithPrice } from '../db.server'
 
 export type DonutSlice = {
@@ -105,74 +105,16 @@ function polar(cx: number, cy: number, r: number, deg: number) {
   return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) }
 }
 
-type AllocationGroupBy = 'holding' | 'sector'
+type DonutSegment = DonutSlice & {
+  start: number
+  end: number
+  color: string
+  pct: number
+}
 
-export function AllocationDonut({
-  title = 'Portfolio Allocation',
-  subtitle = 'Share by current value (or invested if unpriced)',
-  slices: slicesProp,
-  holdings,
-  emptyMessage = 'No holdings to display',
-  variant = 'default',
-}: {
-  title?: string
-  subtitle?: string
-  slices?: DonutSlice[]
-  holdings?: HoldingWithPrice[]
-  emptyMessage?: string
-  /** embedded: no outer card chrome (use inside a parent panel); compact: denser chart + legend */
-  variant?: 'default' | 'embedded' | 'compact'
-}) {
-  const embedded = variant === 'embedded' || variant === 'compact'
-  const compact = variant === 'compact'
-  const [groupBy, setGroupBy] = useState<AllocationGroupBy>('holding')
-  const showGroupToggle = holdings != null
-
-  const slices = useMemo(() => {
-    if (holdings) {
-      return groupBy === 'holding' ? slicesFromHoldings(holdings) : slicesFromSectors(holdings)
-    }
-    return slicesProp ?? []
-  }, [holdings, groupBy, slicesProp])
-
-  const displayTitle =
-    groupBy === 'sector' ? 'Allocation by Sector' : 'Allocation by Holding'
-
-  const headerTitle = showGroupToggle ? displayTitle : title
-
-  const shellClass = embedded
-    ? 'overflow-hidden'
-    : 'rounded-xl border border-gray-800 bg-gray-900 overflow-hidden'
-
-  const total = slices.reduce((sum, s) => sum + s.value, 0)
-  if (total <= 0) {
-    return (
-      <div className={shellClass}>
-        <DonutHeader
-          title={headerTitle}
-          subtitle={subtitle}
-          groupBy={groupBy}
-          onGroupByChange={setGroupBy}
-          showGroupToggle={showGroupToggle}
-          embedded={embedded}
-          compact={compact}
-        />
-        <p className={`text-center text-sm text-gray-500 ${compact ? 'px-4 pb-5' : 'px-6 pb-8'}`}>
-          {emptyMessage}
-        </p>
-      </div>
-    )
-  }
-
-  const size = compact ? 132 : 160
-  const cx = size / 2
-  const cy = size / 2
-  const outerR = compact ? 56 : 68
-  const innerR = compact ? 36 : 44
-  const stroke = outerR - innerR
-
+function buildSegments(slices: DonutSlice[], total: number): DonutSegment[] {
   let angle = 0
-  const segments = slices.map((slice, i) => {
+  return slices.map((slice, i) => {
     const sweep = (slice.value / total) * 360
     const start = angle
     const end = angle + sweep
@@ -185,25 +127,41 @@ export function AllocationDonut({
       pct: (slice.value / total) * 100,
     }
   })
+}
+
+function DonutChart({
+  title,
+  slices,
+  compact,
+  ariaLabel,
+}: {
+  title?: string
+  slices: DonutSlice[]
+  compact: boolean
+  ariaLabel: string
+}) {
+  const total = slices.reduce((sum, s) => sum + s.value, 0)
+  const segments = buildSegments(slices, total)
+
+  const size = compact ? 132 : 160
+  const cx = size / 2
+  const cy = size / 2
+  const outerR = compact ? 56 : 68
+  const innerR = compact ? 36 : 44
+  const stroke = outerR - innerR
 
   return (
-    <div className={shellClass}>
-      <DonutHeader
-        title={headerTitle}
-        subtitle={subtitle}
-        groupBy={groupBy}
-        onGroupByChange={setGroupBy}
-        showGroupToggle={showGroupToggle}
-        embedded={embedded}
-        compact={compact}
-      />
+    <section className="min-w-0">
+      {title && (
+        <h3 className={`mb-3 font-medium text-gray-300 ${compact ? 'text-xs' : 'text-sm'}`}>{title}</h3>
+      )}
       <div
         className={`flex flex-col sm:flex-row sm:items-center ${
-          compact ? 'gap-4 px-4 pb-4' : 'gap-6 px-6 pb-6'
+          compact ? 'gap-3' : 'gap-4'
         }`}
       >
         <div className="relative mx-auto shrink-0 sm:mx-0" style={{ width: size, height: size }}>
-          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={headerTitle}>
+          <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img" aria-label={ariaLabel}>
             {segments.map(seg => {
               if (seg.end - seg.start >= 359.99) {
                 return (
@@ -251,6 +209,94 @@ export function AllocationDonut({
           ))}
         </ul>
       </div>
+    </section>
+  )
+}
+
+export function AllocationDonut({
+  title = 'Portfolio Allocation',
+  subtitle = 'Share by current value (or invested if unpriced)',
+  slices: slicesProp,
+  holdings,
+  emptyMessage = 'No holdings to display',
+  variant = 'default',
+}: {
+  title?: string
+  subtitle?: string
+  slices?: DonutSlice[]
+  holdings?: HoldingWithPrice[]
+  emptyMessage?: string
+  /** embedded: no outer card chrome (use inside a parent panel); compact: denser chart + legend */
+  variant?: 'default' | 'embedded' | 'compact'
+}) {
+  const embedded = variant === 'embedded' || variant === 'compact'
+  const compact = variant === 'compact'
+
+  const holdingSlices = useMemo(
+    () => (holdings ? slicesFromHoldings(holdings) : []),
+    [holdings],
+  )
+  const sectorSlices = useMemo(
+    () => (holdings ? slicesFromSectors(holdings) : []),
+    [holdings],
+  )
+  const slices = slicesProp ?? []
+
+  const shellClass = embedded
+    ? 'overflow-hidden'
+    : 'rounded-xl border border-gray-800 bg-gray-900 overflow-hidden'
+
+  const total = holdings
+    ? holdingSlices.reduce((sum, s) => sum + s.value, 0)
+    : slices.reduce((sum, s) => sum + s.value, 0)
+
+  if (total <= 0) {
+    return (
+      <div className={shellClass}>
+        <DonutHeader title={title} subtitle={subtitle} embedded={embedded} compact={compact} />
+        <p className={`text-center text-sm text-gray-500 ${compact ? 'px-4 pb-5' : 'px-6 pb-8'}`}>
+          {emptyMessage}
+        </p>
+      </div>
+    )
+  }
+
+  if (holdings) {
+    return (
+      <div className={shellClass}>
+        <DonutHeader title={title} subtitle={subtitle} embedded={embedded} compact={compact} />
+        <div
+          className={`grid gap-6 lg:grid-cols-2 lg:gap-0 lg:divide-x lg:divide-gray-800 ${
+            compact ? 'px-4 pb-4 pt-1' : 'px-6 pb-6 pt-1'
+          }`}
+        >
+          <div className={compact ? 'lg:pr-4' : 'lg:pr-6'}>
+            <DonutChart
+              title="By Holding"
+              slices={holdingSlices}
+              compact={compact}
+              ariaLabel="Allocation by holding"
+            />
+          </div>
+          <div className={compact ? 'lg:pl-4' : 'lg:pl-6'}>
+            <DonutChart
+              title="By Sector"
+              slices={sectorSlices}
+              compact={compact}
+              ariaLabel="Allocation by sector"
+            />
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className={shellClass}>
+      <DonutHeader title={title} subtitle={subtitle} embedded={embedded} compact={compact} />
+      <div className={compact ? 'px-4 pb-4 pt-1' : 'px-6 pb-6 pt-1'}>
+        <DonutChart slices={slices} compact={compact} ariaLabel={title} />
+      </div>
     </div>
   )
 }
@@ -258,17 +304,11 @@ export function AllocationDonut({
 function DonutHeader({
   title,
   subtitle,
-  groupBy,
-  onGroupByChange,
-  showGroupToggle,
   embedded = false,
   compact = false,
 }: {
   title: string
   subtitle?: string
-  groupBy: AllocationGroupBy
-  onGroupByChange: (mode: AllocationGroupBy) => void
-  showGroupToggle: boolean
   embedded?: boolean
   compact?: boolean
 }) {
@@ -276,33 +316,9 @@ function DonutHeader({
     <div
       className={`border-b border-gray-800 ${compact ? 'px-4 py-3' : embedded ? 'px-5 py-3' : 'px-6 py-4'}`}
     >
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h2 className={`font-semibold text-gray-200 ${compact ? 'text-sm' : 'text-base'}`}>{title}</h2>
-          {subtitle && !compact && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
-        </div>
-        {showGroupToggle && (
-          <div
-            className="flex shrink-0 rounded-lg border border-gray-700 bg-gray-800/80 p-0.5 text-xs"
-            role="group"
-            aria-label="Group allocation by"
-          >
-            {(['holding', 'sector'] as const).map(mode => (
-              <button
-                key={mode}
-                type="button"
-                onClick={() => onGroupByChange(mode)}
-                className={`rounded-md px-2.5 py-1 font-medium capitalize transition-colors ${
-                  groupBy === mode
-                    ? 'bg-gray-700 text-white'
-                    : 'text-gray-400 hover:text-gray-200'
-                }`}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-        )}
+      <div className="min-w-0">
+        <h2 className={`font-semibold text-gray-200 ${compact ? 'text-sm' : 'text-base'}`}>{title}</h2>
+        {subtitle && !compact && <p className="mt-0.5 text-xs text-gray-500">{subtitle}</p>}
       </div>
     </div>
   )
