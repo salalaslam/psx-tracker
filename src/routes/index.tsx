@@ -14,7 +14,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
-import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
+import { AllocationDonut } from '../components/AllocationDonut'
+import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
 import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 import { buyPriceStatusRank, calcGoodBuyPrice } from '../goodBuyPrice'
@@ -73,159 +74,13 @@ function fmtDateFull(sess: string): string {
   })
 }
 
-function calcSummary(holdings: HoldingWithPrice[]) {
-  let invested = 0
-  let current = 0
-  let priced = 0
-  for (const h of holdings) {
-    invested += h.total_invested
-    if (h.latest_price !== null) {
-      current += h.shares * h.latest_price
-      priced++
-    }
-  }
-  const gainLoss = current - invested
-  const pct = invested > 0 ? (gainLoss / invested) * 100 : 0
-  return { invested, current, gainLoss, pct, priced, total: holdings.length }
-}
-
-function SummaryCard({
-  label,
-  account,
-  holdings,
-  dividendNet,
-  dividendCount,
-  dividendShares,
-}: {
-  label: string
-  account: string
-  holdings: HoldingWithPrice[]
-  dividendNet: number
-  dividendCount: number
-  dividendShares: number | null
-}) {
-  const s = calcSummary(holdings)
-  const holdingShares = holdings.reduce((sum, h) => sum + h.shares, 0)
-  const green = s.gainLoss >= 0
-  const dividendYield = calcDividendYieldOnCost({
-    totalNet: dividendNet,
-    totalDividendShares: dividendShares,
-    invested: s.invested,
-    holdingShares,
-    eventCount: dividendCount,
-  })
-  const dps = dividendPerShare(dividendNet, dividendShares)
-  return (
-    <div className="rounded-xl border border-gray-800 bg-gray-900 p-6">
-      <div className="mb-4 flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-gray-200">{label}</h2>
-        <Link
-          to="/account/$name"
-          params={{ name: account }}
-          className="rounded-md bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
-        >
-          View Details →
-        </Link>
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <Stat label="Invested" value={`₨ ${fmt(s.invested)}`} />
-        <Stat
-          label="Current Value"
-          value={s.priced > 0 ? `₨ ${fmt(s.current)}` : '—'}
-          sub={s.priced < s.total ? `${s.priced}/${s.total} priced` : undefined}
-        />
-        <Stat
-          label="Gain / Loss"
-          value={s.priced > 0 ? `₨ ${fmt(s.gainLoss)}` : '—'}
-          color={s.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
-        />
-        <Stat
-          label="Return"
-          value={s.priced > 0 ? `${green ? '+' : ''}${s.pct.toFixed(2)}%` : '—'}
-          color={s.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
-        />
-        <Stat
-          label="Net Dividends"
-          value={dividendCount > 0 ? `₨ ${fmt(dividendNet)}` : '—'}
-          sub={dividendCount > 0 ? `${dividendCount} events` : undefined}
-          color={dividendCount > 0 ? 'text-emerald-400' : undefined}
-        />
-        <Stat
-          label="Dividend Yield"
-          value={dividendYield !== null ? `${dividendYield.toFixed(2)}%` : '—'}
-          sub={
-            dps != null
-              ? `₨ ${dps.toFixed(2)}/sh on cost`
-              : dividendYield !== null
-                ? 'on cost basis'
-                : undefined
-          }
-          color={dividendYield !== null ? 'text-emerald-400' : undefined}
-        />
-      </div>
-      <p className="mt-3 text-xs text-gray-500">{s.total} positions</p>
-    </div>
-  )
-}
-
-function Stat({
-  label,
-  value,
-  sub,
-  color,
-}: {
-  label: string
-  value: string
-  sub?: string
-  color?: string
-}) {
-  return (
-    <div>
-      <p className="text-xs text-gray-500 uppercase tracking-wide">{label}</p>
-      <p className={`mt-0.5 text-xl font-bold ${color ?? 'text-white'}`}>{value}</p>
-      {sub && <p className="text-xs text-gray-500">{sub}</p>}
-    </div>
-  )
-}
-
 function Dashboard() {
   const { accounts, holdings, portfolioHistory, dividendTotals } = Route.useLoaderData()
   const [fetching, setFetching] = useState(false)
   const [fetchResults, setFetchResults] = useState<FetchResult[] | null>(null)
   const router = useRouter()
 
-  // Calculate summaries for all accounts
-  const summaries = Object.fromEntries(
-    accounts.map(account => [account, calcSummary(holdings[account] || [])])
-  )
-
-  // Calculate combined summary
-  const combined = accounts.reduce(
-    (acc, account) => {
-      const s = summaries[account]
-      return {
-        invested: acc.invested + s.invested,
-        current: acc.current + s.current,
-        gainLoss: acc.gainLoss + s.gainLoss,
-        pct: 0, // will calculate below
-        priced: acc.priced + s.priced,
-        total: acc.total + s.total,
-      }
-    },
-    { invested: 0, current: 0, gainLoss: 0, pct: 0, priced: 0, total: 0 }
-  )
-  combined.pct = combined.invested > 0 ? (combined.gainLoss / combined.invested) * 100 : 0
-
   const allHoldings = Object.values(holdings).flat()
-  const combinedHoldingShares = allHoldings.reduce((sum, h) => sum + h.shares, 0)
-  const combinedDividendYield = calcDividendYieldOnCost({
-    totalNet: dividendTotals.total_net,
-    totalDividendShares: dividendTotals.total_shares,
-    invested: combined.invested,
-    holdingShares: combinedHoldingShares,
-    eventCount: dividendTotals.count,
-  })
-  const combinedDps = dividendPerShare(dividendTotals.total_net, dividendTotals.total_shares)
 
   async function handleFetch() {
     setFetching(true)
@@ -242,7 +97,6 @@ function Dashboard() {
 
   const successCount = fetchResults?.filter(r => r.stored).length ?? 0
   const failCount = fetchResults?.filter(r => !r.stored).length ?? 0
-  const green = combined.gainLoss >= 0
 
   return (
     <div className="space-y-8">
@@ -282,90 +136,18 @@ function Dashboard() {
         </div>
       )}
 
-      {/* Allocation charts */}
-      <div className={`grid gap-6 ${accounts.length > 1 ? 'lg:grid-cols-2' : ''}`}>
-        <AllocationDonut
-          holdings={allHoldings}
-          subtitle="Share of combined portfolio by current value (or invested if unpriced)"
-        />
-        {accounts.length > 1 && (
-          <AllocationDonut
-            title="Allocation by Account"
-            subtitle="Share of combined portfolio per account"
-            slices={slicesFromAccounts(accounts, holdings)}
-          />
-        )}
-      </div>
+      {/* Allocation chart */}
+      <AllocationDonut
+        holdings={allHoldings}
+        subtitle="Share of combined portfolio by current value (or invested if unpriced)"
+      />
 
       {/* Combined summary */}
-      <div className="rounded-xl border border-gray-700 bg-gradient-to-br from-gray-900 to-gray-800 p-6">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <h2 className="text-base font-semibold uppercase tracking-wider text-gray-400">Combined Portfolio</h2>
-          <Link
-            to="/combined-history"
-            className="rounded-md bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-700"
-          >
-            View Price History →
-          </Link>
-        </div>
-        <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-6">
-          <Stat label="Total Invested" value={`₨ ${fmt(combined.invested)}`} />
-          <Stat
-            label="Current Value"
-            value={combined.priced > 0 ? `₨ ${fmt(combined.current)}` : '—'}
-          />
-          <Stat
-            label="Total Gain / Loss"
-            value={combined.priced > 0 ? `₨ ${fmt(combined.gainLoss)}` : '—'}
-            color={combined.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
-          />
-          <Stat
-            label="Overall Return"
-            value={combined.priced > 0 ? `${green ? '+' : ''}${combined.pct.toFixed(2)}%` : '—'}
-            color={combined.priced > 0 ? (green ? 'text-emerald-400' : 'text-red-400') : undefined}
-          />
-          <Stat
-            label="Net Dividends"
-            value={dividendTotals.count > 0 ? `₨ ${fmt(dividendTotals.total_net)}` : '—'}
-            sub={dividendTotals.count > 0 ? `${dividendTotals.count} events` : undefined}
-            color={dividendTotals.count > 0 ? 'text-emerald-400' : undefined}
-          />
-          <Stat
-            label="Dividend Yield"
-            value={combinedDividendYield !== null ? `${combinedDividendYield.toFixed(2)}%` : '—'}
-            sub={
-              combinedDps != null
-                ? `₨ ${combinedDps.toFixed(2)}/sh on cost`
-                : combinedDividendYield !== null
-                  ? 'on cost basis'
-                  : undefined
-            }
-            color={combinedDividendYield !== null ? 'text-emerald-400' : undefined}
-          />
-        </div>
-      </div>
-
-      {/* Per-account cards */}
-      <div className={`grid gap-6 ${accounts.length === 1 ? '' : accounts.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3 lg:grid-cols-4'}`}>
-        {accounts.map(account => {
-          const div = dividendTotals.by_account[account] ?? {
-            total_net: 0,
-            count: 0,
-            total_shares: null,
-          }
-          return (
-            <SummaryCard
-              key={account}
-              label={`${account.charAt(0).toUpperCase() + account.slice(1)}'s Portfolio`}
-              account={account}
-              holdings={holdings[account] || []}
-              dividendNet={div.total_net}
-              dividendCount={div.count}
-              dividendShares={div.total_shares}
-            />
-          )
-        })}
-      </div>
+      <CombinedPortfolioSummary
+        accounts={accounts}
+        holdings={holdings}
+        dividendTotals={dividendTotals}
+      />
 
       {/* Portfolio value chart */}
       <PortfolioChart data={portfolioHistory} />
