@@ -34,6 +34,7 @@ import { isAccountChargeCategory } from './accountCharges'
 import { parseDividendPaste, parsePaymentDate } from './dividends'
 import { buildCombinedDividendTaxReport } from './dividendTax'
 import { fetchAllPrices, fetchAndStoreSectors, fetchPsxQuote } from './psx.server'
+import { getValueResearchReport } from './valueResearch.server'
 
 async function ensureMissingSectors(): Promise<{ fetched: number; failed: string[] }> {
   const missing = getSymbolsMissingSector()
@@ -183,6 +184,10 @@ export const serverFetchAndStorePrices = createServerFn({ method: 'POST' }).hand
 
 export const serverGetPortfolioHistory = createServerFn({ method: 'GET' }).handler(
   async () => getPortfolioValueHistory(),
+)
+
+export const serverGetValueResearchReport = createServerFn({ method: 'GET' }).handler(
+  async () => getValueResearchReport(),
 )
 
 export const serverGetAccountCharges = createServerFn({ method: 'GET' })

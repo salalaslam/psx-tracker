@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as TaxReportRouteImport } from './routes/tax-report'
+import { Route as ResearchRouteImport } from './routes/research'
 import { Route as GainsRouteImport } from './routes/gains'
 import { Route as CombinedHistoryRouteImport } from './routes/combined-history'
 import { Route as AccountsRouteImport } from './routes/accounts'
@@ -20,6 +21,11 @@ import { Route as AccountNameRouteImport } from './routes/account.$name'
 const TaxReportRoute = TaxReportRouteImport.update({
   id: '/tax-report',
   path: '/tax-report',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ResearchRoute = ResearchRouteImport.update({
+  id: '/research',
+  path: '/research',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GainsRoute = GainsRouteImport.update({
@@ -58,6 +64,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof AccountsRoute
   '/combined-history': typeof CombinedHistoryRoute
   '/gains': typeof GainsRoute
+  '/research': typeof ResearchRoute
   '/tax-report': typeof TaxReportRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
@@ -67,6 +74,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof AccountsRoute
   '/combined-history': typeof CombinedHistoryRoute
   '/gains': typeof GainsRoute
+  '/research': typeof ResearchRoute
   '/tax-report': typeof TaxReportRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
@@ -77,6 +85,7 @@ export interface FileRoutesById {
   '/accounts': typeof AccountsRoute
   '/combined-history': typeof CombinedHistoryRoute
   '/gains': typeof GainsRoute
+  '/research': typeof ResearchRoute
   '/tax-report': typeof TaxReportRoute
   '/account/$name': typeof AccountNameRoute
   '/history/$symbol': typeof HistorySymbolRoute
@@ -88,6 +97,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/combined-history'
     | '/gains'
+    | '/research'
     | '/tax-report'
     | '/account/$name'
     | '/history/$symbol'
@@ -97,6 +107,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/combined-history'
     | '/gains'
+    | '/research'
     | '/tax-report'
     | '/account/$name'
     | '/history/$symbol'
@@ -106,6 +117,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/combined-history'
     | '/gains'
+    | '/research'
     | '/tax-report'
     | '/account/$name'
     | '/history/$symbol'
@@ -116,6 +128,7 @@ export interface RootRouteChildren {
   AccountsRoute: typeof AccountsRoute
   CombinedHistoryRoute: typeof CombinedHistoryRoute
   GainsRoute: typeof GainsRoute
+  ResearchRoute: typeof ResearchRoute
   TaxReportRoute: typeof TaxReportRoute
   AccountNameRoute: typeof AccountNameRoute
   HistorySymbolRoute: typeof HistorySymbolRoute
@@ -128,6 +141,13 @@ declare module '@tanstack/react-router' {
       path: '/tax-report'
       fullPath: '/tax-report'
       preLoaderRoute: typeof TaxReportRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/research': {
+      id: '/research'
+      path: '/research'
+      fullPath: '/research'
+      preLoaderRoute: typeof ResearchRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/gains': {
@@ -180,6 +200,7 @@ const rootRouteChildren: RootRouteChildren = {
   AccountsRoute: AccountsRoute,
   CombinedHistoryRoute: CombinedHistoryRoute,
   GainsRoute: GainsRoute,
+  ResearchRoute: ResearchRoute,
   TaxReportRoute: TaxReportRoute,
   AccountNameRoute: AccountNameRoute,
   HistorySymbolRoute: HistorySymbolRoute,
