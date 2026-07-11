@@ -93,8 +93,7 @@ function GainsPage() {
   return (
     <div className="space-y-7">
       <div>
-        <Link to="/" className="text-sm text-gray-400 transition-colors hover:text-white">← Dashboard</Link>
-        <div className="mt-5 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
             <div className="mb-2 flex items-center gap-2 text-emerald-400">
               <Trophy className="h-4 w-4" />
