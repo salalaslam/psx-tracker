@@ -19,6 +19,7 @@ import {
   getDividendSummary,
   getDividends,
   getHoldings,
+  getGainPositions,
   getLatestPrices,
   getPortfolioValueHistory,
   getPriceHistory,
@@ -44,6 +45,10 @@ async function ensureMissingSectors(): Promise<{ fetched: number; failed: string
 export const serverGetHoldings = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
   .handler(async ({ data }) => getHoldings(data))
+
+export const serverGetGainPositions = createServerFn({ method: 'GET' }).handler(
+  async () => getGainPositions(),
+)
 
 export const serverGetTransactions = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
