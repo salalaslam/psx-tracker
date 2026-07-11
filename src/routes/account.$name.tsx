@@ -18,6 +18,8 @@ import { AccountTransactions, type TransactionRow } from '../components/AccountT
 import { AccountCharges } from '../components/AccountCharges'
 import { AccountCorporateEvents } from '../components/AccountCorporateEvents'
 import { AccountDividends } from '../components/AccountDividends'
+import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
+import { buyPriceStatusRank, calcGoodBuyPrice } from '../goodBuyPrice'
 
 const ACCOUNT_TABS = ['portfolio', 'transactions', 'dividends', 'charges', 'events'] as const
 type AccountTab = (typeof ACCOUNT_TABS)[number]
@@ -126,6 +128,8 @@ function AccountPage() {
         const cv = h.latest_price !== null ? h.shares * h.latest_price : null
         const pl = cv !== null ? cv - h.total_invested : null
         return pl !== null && h.total_invested > 0 ? (pl / h.total_invested) * 100 : 0
+      case 'buyRange':
+        return buyPriceStatusRank(calcGoodBuyPrice(h.cost_avg, h.latest_price)?.status ?? null)
       default:
         return 0
     }
@@ -547,6 +551,17 @@ function AccountPage() {
                   </div>
                 </th>
                 <th
+                  onClick={() => handleSort('buyRange')}
+                  className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
+                >
+                  <div className="flex items-center justify-end gap-2">
+                    Good Buy Range
+                    {sortColumn === 'buyRange' && (
+                      sortDirection === 'asc' ? <ArrowUp size={14} /> : <ArrowDown size={14} />
+                    )}
+                  </div>
+                </th>
+                <th
                   onClick={() => handleSort('pl')}
                   className="px-5 py-3 text-right cursor-pointer whitespace-nowrap hover:text-gray-400 transition-colors"
                 >
@@ -607,6 +622,9 @@ function AccountPage() {
                     </td>
                     <td className="px-5 py-3 text-right text-gray-400">
                       {h.latest_price !== null ? fmt(h.latest_price) : <span className="text-gray-600">—</span>}
+                    </td>
+                    <td className="px-5 py-3 text-right text-xs">
+                      <GoodBuyPriceCell avgCost={h.cost_avg} currentPrice={h.latest_price} />
                     </td>
                     <td className={`px-5 py-3 text-right font-medium ${g === true ? 'text-emerald-400' : g === false ? 'text-red-400' : 'text-gray-600'}`}>
                       {pl !== null ? `${g ? '+' : ''}${fmt(pl)}` : '—'}
