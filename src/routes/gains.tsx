@@ -55,10 +55,11 @@ function accountLabel(value: string): string {
 
 function metrics(position: GainPosition) {
   const current = position.shares * position.latest_price
-  const gain = current - position.total_invested
+  const marketGain = current - position.total_invested
+  const gain = marketGain + position.dividend_net
   const returnPct = (gain / position.total_invested) * 100
   const days = dayCount(position.first_invested_at, position.latest_fetched_at)
-  return { current, gain, returnPct, days }
+  return { current, marketGain, gain, returnPct, days }
 }
 
 function GainsPage() {
@@ -79,9 +80,10 @@ function GainsPage() {
     return {
       invested: sum.invested + position.total_invested,
       current: sum.current + m.current,
+      dividends: sum.dividends + position.dividend_net,
       gain: sum.gain + m.gain,
     }
-  }, { invested: 0, current: 0, gain: 0 })
+  }, { invested: 0, current: 0, dividends: 0, gain: 0 })
   const totalReturn = totals.invested ? (totals.gain / totals.invested) * 100 : 0
   const knownDurations = positions.map(p => metrics(p).days).filter((d): d is number => d !== null)
   const averageDays = knownDurations.length
@@ -100,7 +102,7 @@ function GainsPage() {
             </div>
             <h1 className="text-3xl font-bold tracking-tight text-white">Gains &amp; Time</h1>
             <p className="mt-2 max-w-2xl text-sm text-gray-400">
-              See how much each profitable holding has earned—and how long the investment took to get there.
+              See how much each profitable holding has earned from price movement and dividends—and how long the investment took to get there.
             </p>
           </div>
           {positions.length > 0 && (
@@ -119,8 +121,8 @@ function GainsPage() {
         <>
           <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
             <Summary label="Capital in winners" value={compactMoney(totals.invested)} detail={`${positions.length} profitable position${positions.length === 1 ? '' : 's'}`} />
-            <Summary label="Current value" value={compactMoney(totals.current)} detail="Latest market value" />
-            <Summary label="Total gain" value={`+${compactMoney(totals.gain)}`} detail={`+${totalReturn.toFixed(2)}% return`} accent />
+            <Summary label="Net dividends" value={compactMoney(totals.dividends)} detail="Included in total gain" />
+            <Summary label="Total gain" value={`+${compactMoney(totals.gain)}`} detail={`+${totalReturn.toFixed(2)}% incl. dividends`} accent />
             <Summary label="Average time" value={durationLabel(averageDays)} detail="Across dated investments" />
           </section>
 
@@ -128,7 +130,7 @@ function GainsPage() {
             <div className="flex flex-col gap-3 border-b border-gray-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <h2 className="font-semibold text-white">Profitable holdings</h2>
-                <p className="mt-0.5 text-xs text-gray-500">Only positions above their cost basis appear here.</p>
+                <p className="mt-0.5 text-xs text-gray-500">Positions with a positive market-and-dividend return appear here.</p>
               </div>
               <label className="flex items-center gap-2 text-xs text-gray-500">
                 Sort by
@@ -161,7 +163,7 @@ function Summary({ label, value, detail, accent = false }: { label: string; valu
 }
 
 function PositionRow({ position, rank }: { position: GainPosition; rank: number }) {
-  const { current, gain, returnPct, days } = metrics(position)
+  const { current, marketGain, gain, returnPct, days } = metrics(position)
   return (
     <div className="grid gap-5 px-5 py-5 transition-colors hover:bg-gray-800/35 lg:grid-cols-[1.2fr_1.4fr_1fr_auto] lg:items-center">
       <div className="flex items-center gap-4">
@@ -188,11 +190,15 @@ function PositionRow({ position, rank }: { position: GainPosition; rank: number 
       </div>
 
       <div>
-        <p className="text-[10px] uppercase tracking-wider text-gray-500">Gain</p>
+        <p className="text-[10px] uppercase tracking-wider text-gray-500">Total gain</p>
         <div className="mt-1 flex items-baseline gap-2">
           <span className="text-lg font-bold text-emerald-400">+{money(gain)}</span>
           <span className="text-xs font-semibold text-emerald-500">+{returnPct.toFixed(2)}%</span>
         </div>
+        <p className="mt-1 text-[11px] text-gray-500">
+          Market {marketGain >= 0 ? '+' : ''}{money(marketGain)} · Dividends +{money(position.dividend_net)}
+          {position.dividend_count > 0 ? ` (${position.dividend_count})` : ''}
+        </p>
       </div>
 
       <div className="min-w-40 rounded-xl border border-gray-800 bg-gray-950/60 px-4 py-3">

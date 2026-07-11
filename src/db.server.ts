@@ -244,6 +244,8 @@ export interface GainPosition {
   latest_price: number
   latest_fetched_at: string
   first_invested_at: string | null
+  dividend_net: number
+  dividend_count: number
 }
 
 export function getGainPositions(): GainPosition[] {
@@ -257,7 +259,9 @@ export function getGainPositions(): GainPosition[] {
       h.total_invested,
       latest.price AS latest_price,
       latest.fetched_at AS latest_fetched_at,
-      first_buy.first_invested_at
+      first_buy.first_invested_at,
+      COALESCE(dividend_totals.dividend_net, 0) AS dividend_net,
+      COALESCE(dividend_totals.dividend_count, 0) AS dividend_count
     FROM holdings h
     INNER JOIN price_snapshots latest
       ON latest.symbol = h.symbol
@@ -272,8 +276,16 @@ export function getGainPositions(): GainPosition[] {
       GROUP BY account, symbol
     ) first_buy
       ON first_buy.account = h.account AND first_buy.symbol = h.symbol
-    WHERE (h.shares * latest.price) > h.total_invested
-    ORDER BY ((h.shares * latest.price) - h.total_invested) DESC
+    LEFT JOIN (
+      SELECT account, symbol, SUM(net_amount) AS dividend_net, COUNT(1) AS dividend_count
+      FROM dividends
+      GROUP BY account, symbol
+    ) dividend_totals
+      ON dividend_totals.account = h.account AND dividend_totals.symbol = h.symbol
+    WHERE ((h.shares * latest.price) - h.total_invested
+      + COALESCE(dividend_totals.dividend_net, 0)) > 0
+    ORDER BY ((h.shares * latest.price) - h.total_invested
+      + COALESCE(dividend_totals.dividend_net, 0)) DESC
   `).all() as GainPosition[]
 }
 
