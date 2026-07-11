@@ -1,11 +1,29 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
-import { serverCreateAccount, serverGetAllAccounts } from '../serverFns'
+import { AccountSummaryCard } from '../components/AccountSummaryCard'
+import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
+import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
+import {
+  serverCreateAccount,
+  serverGetAllAccounts,
+  serverGetAllDividendTotals,
+  serverGetHoldings,
+} from '../serverFns'
 
 export const Route = createFileRoute('/accounts')({
   loader: async () => {
     const accounts = await serverGetAllAccounts()
-    return { accounts }
+    const holdings: Record<string, Awaited<ReturnType<typeof serverGetHoldings>>> = {}
+
+    await Promise.all(
+      accounts.map(async account => {
+        holdings[account] = await serverGetHoldings({ data: account })
+      }),
+    )
+
+    const dividendTotals = await serverGetAllDividendTotals()
+
+    return { accounts, holdings, dividendTotals }
   },
   component: AccountsPage,
 })
@@ -15,7 +33,7 @@ function accountLabel(account: string): string {
 }
 
 function AccountsPage() {
-  const { accounts } = Route.useLoaderData()
+  const { accounts, holdings, dividendTotals } = Route.useLoaderData()
   const router = useRouter()
   const [newAccountName, setNewAccountName] = useState('')
   const [creating, setCreating] = useState(false)
@@ -51,6 +69,47 @@ function AccountsPage() {
           Manage portfolio accounts — each account tracks its own holdings and transactions.
         </p>
       </div>
+
+      {accounts.length > 0 && (
+        <>
+          <CombinedPortfolioSummary
+            accounts={accounts}
+            holdings={holdings}
+            dividendTotals={dividendTotals}
+          />
+
+          {accounts.length > 1 && (
+            <AllocationDonut
+              title="Allocation by Account"
+              subtitle="Share of combined portfolio per account"
+              slices={slicesFromAccounts(accounts, holdings)}
+            />
+          )}
+
+          <div
+            className={`grid gap-6 ${accounts.length === 1 ? '' : accounts.length === 2 ? 'sm:grid-cols-2' : 'sm:grid-cols-3 lg:grid-cols-4'}`}
+          >
+            {accounts.map(account => {
+              const div = dividendTotals.by_account[account] ?? {
+                total_net: 0,
+                count: 0,
+                total_shares: null,
+              }
+              return (
+                <AccountSummaryCard
+                  key={account}
+                  label={`${accountLabel(account)}'s Portfolio`}
+                  account={account}
+                  holdings={holdings[account] || []}
+                  dividendNet={div.total_net}
+                  dividendCount={div.count}
+                  dividendShares={div.total_shares}
+                />
+              )
+            })}
+          </div>
+        </>
+      )}
 
       <section className="rounded-xl border border-gray-800 bg-gray-900 p-6">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-400">Add account</h2>
