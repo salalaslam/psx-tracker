@@ -5,8 +5,6 @@ import {
   createRootRoute,
   Outlet,
 } from '@tanstack/react-router'
-import { useState, useEffect } from 'react'
-import { serverGetAllAccounts, serverCreateAccount } from '../serverFns'
 
 import appCss from '../styles.css?url'
 
@@ -40,43 +38,6 @@ function RootLayout() {
 }
 
 function Header() {
-  const [accounts, setAccounts] = useState<string[]>([])
-  const [showNewAccountForm, setShowNewAccountForm] = useState(false)
-  const [newAccountName, setNewAccountName] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    async function loadAccounts() {
-      try {
-        const accts = await serverGetAllAccounts()
-        setAccounts(accts)
-      } finally {
-        setLoading(false)
-      }
-    }
-    loadAccounts()
-  }, [])
-
-  async function handleCreateAccount(e: React.FormEvent) {
-    e.preventDefault()
-    if (!newAccountName.trim()) return
-
-    setCreating(true)
-    try {
-      const success = await serverCreateAccount({ data: newAccountName })
-      if (success) {
-        setNewAccountName('')
-        setShowNewAccountForm(false)
-        // Reload accounts list
-        const accts = await serverGetAllAccounts()
-        setAccounts(accts)
-      }
-    } finally {
-      setCreating(false)
-    }
-  }
-
   return (
     <header className="border-b border-gray-800 bg-gray-900">
       <nav className="mx-auto flex max-w-7xl items-center gap-6 px-6 py-4">
@@ -97,62 +58,19 @@ function Header() {
             Combined History
           </Link>
           <Link
+            to="/accounts"
+            className="rounded-md px-3 py-1.5 transition-colors hover:bg-gray-800 [&.active]:bg-gray-800 [&.active]:text-emerald-400"
+          >
+            Accounts
+          </Link>
+          <Link
             to="/tax-report"
             className="rounded-md px-3 py-1.5 transition-colors hover:bg-gray-800 [&.active]:bg-gray-800 [&.active]:text-emerald-400"
           >
             Tax Report
           </Link>
-          {!loading &&
-            accounts.map(account => (
-              <Link
-                key={account}
-                to="/account/$name"
-                params={{ name: account }}
-                className="rounded-md px-3 py-1.5 transition-colors hover:bg-gray-800 [&.active]:bg-gray-800 [&.active]:text-emerald-400"
-              >
-                {account.charAt(0).toUpperCase() + account.slice(1)}
-              </Link>
-            ))}
-          <button
-            onClick={() => setShowNewAccountForm(!showNewAccountForm)}
-            className="rounded-md px-3 py-1.5 text-xs bg-emerald-600 text-white hover:bg-emerald-700 transition-colors"
-          >
-            + New Account
-          </button>
         </div>
       </nav>
-
-      {showNewAccountForm && (
-        <div className="border-t border-gray-800 bg-gray-800/50 px-6 py-4">
-          <form onSubmit={handleCreateAccount} className="flex gap-2">
-            <input
-              type="text"
-              value={newAccountName}
-              onChange={e => setNewAccountName(e.target.value)}
-              placeholder="Account name (e.g. alice)"
-              className="rounded-md bg-gray-700 px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-              disabled={creating}
-            />
-            <button
-              type="submit"
-              disabled={creating || !newAccountName.trim()}
-              className="rounded-md bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {creating ? 'Creating...' : 'Create'}
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setShowNewAccountForm(false)
-                setNewAccountName('')
-              }}
-              className="rounded-md bg-gray-700 px-4 py-2 text-sm text-white hover:bg-gray-600 transition-colors"
-            >
-              Cancel
-            </button>
-          </form>
-        </div>
-      )}
     </header>
   )
 }
