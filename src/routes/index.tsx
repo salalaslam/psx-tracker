@@ -10,7 +10,7 @@ import {
   Tooltip,
   type ChartOptions,
 } from 'chart.js'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
@@ -541,6 +541,31 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
 }
 
 type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield' | 'buyRange'
+type HoldingColumn = 'rank' | SortCol
+
+const holdingColumns: ReadonlyArray<{
+  key: HoldingColumn
+  label: string
+  align: 'left' | 'right'
+  sortable?: SortCol
+}> = [
+  { key: 'rank', label: '#', align: 'left' },
+  { key: 'symbol', label: 'Symbol', align: 'left', sortable: 'symbol' },
+  { key: 'sector', label: 'Sector', align: 'left', sortable: 'sector' },
+  { key: 'shares', label: 'Shares', align: 'right', sortable: 'shares' },
+  { key: 'invested', label: 'Invested (₨)', align: 'right', sortable: 'invested' },
+  { key: 'current', label: 'Current (₨)', align: 'right', sortable: 'current' },
+  { key: 'gainLoss', label: 'P&L (₨)', align: 'right', sortable: 'gainLoss' },
+  { key: 'pct', label: 'Return', align: 'right', sortable: 'pct' },
+  { key: 'buyRange', label: 'Good Buy Range', align: 'right', sortable: 'buyRange' },
+  { key: 'divYield', label: 'Div. Yield', align: 'right', sortable: 'divYield' },
+]
+
+const defaultHoldingColumnVisibility = Object.fromEntries(
+  holdingColumns.map(column => [column.key, true]),
+) as Record<HoldingColumn, boolean>
+
+const holdingColumnStorageKey = 'dashboard-holdings-visible-columns'
 
 function TopMovers({
   holdings,
@@ -551,6 +576,39 @@ function TopMovers({
 }) {
   const [sortCol, setSortCol] = useState<SortCol>('gainLoss')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [visibleColumns, setVisibleColumns] = useState(defaultHoldingColumnVisibility)
+
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(holdingColumnStorageKey)
+      if (!saved) return
+      const parsed = JSON.parse(saved) as Partial<Record<HoldingColumn, boolean>>
+      setVisibleColumns(current => ({ ...current, ...parsed }))
+    } catch {
+      // Ignore invalid or unavailable local storage and keep the defaults.
+    }
+  }, [])
+
+  function toggleColumn(column: HoldingColumn) {
+    setVisibleColumns(current => {
+      const next = { ...current, [column]: !current[column] }
+      try {
+        window.localStorage.setItem(holdingColumnStorageKey, JSON.stringify(next))
+      } catch {
+        // Column visibility still works for this session if storage is unavailable.
+      }
+      return next
+    })
+  }
+
+  function showAllColumns() {
+    setVisibleColumns(defaultHoldingColumnVisibility)
+    try {
+      window.localStorage.setItem(holdingColumnStorageKey, JSON.stringify(defaultHoldingColumnVisibility))
+    } catch {
+      // Column visibility still works for this session if storage is unavailable.
+    }
+  }
 
   function handleSort(col: SortCol) {
     if (col === sortCol) {
@@ -640,38 +698,55 @@ function TopMovers({
 
   return (
     <div className="rounded-xl border border-gray-800 bg-gray-900 overflow-hidden">
-      <div className="px-6 py-4 border-b border-gray-800">
-        <h2 className="text-base font-semibold text-gray-200">Holdings Overview</h2>
-        <p className="text-xs text-gray-500 mt-0.5">Combined across {accountNames.map(a => a.charAt(0).toUpperCase() + a.slice(1)).join(', ')}</p>
+      <div className="px-6 py-4 border-b border-gray-800 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-gray-200">Holdings Overview</h2>
+          <p className="text-xs text-gray-500 mt-0.5">Combined across {accountNames.map(a => a.charAt(0).toUpperCase() + a.slice(1)).join(', ')}</p>
+        </div>
+        <details className="relative">
+          <summary className="list-none cursor-pointer select-none rounded-md border border-gray-700 bg-gray-800 px-3 py-1.5 text-xs font-medium text-gray-300 transition-colors hover:border-gray-600 hover:bg-gray-700">
+            Columns
+          </summary>
+          <div className="absolute right-0 z-20 mt-2 w-56 rounded-lg border border-gray-700 bg-gray-900 p-2 shadow-xl">
+            <div className="flex items-center justify-between px-2 pb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-gray-500">Show columns</span>
+              <button type="button" onClick={showAllColumns} className="text-xs text-emerald-400 hover:text-emerald-300">
+                Show all
+              </button>
+            </div>
+            {holdingColumns.map(column => (
+              <label key={column.key} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm text-gray-300 hover:bg-gray-800">
+                <input
+                  type="checkbox"
+                  checked={visibleColumns[column.key]}
+                  onChange={() => toggleColumn(column.key)}
+                  className="h-4 w-4 accent-emerald-500"
+                />
+                {column.label}
+              </label>
+            ))}
+          </div>
+        </details>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wide">
-              <th className="px-6 py-3 text-left">#</th>
-              {([
-                { col: 'symbol' as SortCol, label: 'Symbol', align: 'left' },
-                { col: 'sector' as SortCol, label: 'Sector', align: 'left' },
-                { col: 'shares' as SortCol, label: 'Shares', align: 'right' },
-                { col: 'invested' as SortCol, label: 'Invested (₨)', align: 'right' },
-                { col: 'current' as SortCol, label: 'Current (₨)', align: 'right' },
-                { col: 'gainLoss' as SortCol, label: 'P&L (₨)', align: 'right' },
-                { col: 'pct' as SortCol, label: 'Return', align: 'right' },
-                { col: 'buyRange' as SortCol, label: 'Good Buy Range', align: 'right' },
-                { col: 'divYield' as SortCol, label: 'Div. Yield', align: 'right' },
-              ] as const).map(({ col, label, align }) => (
+              {holdingColumns.filter(column => visibleColumns[column.key]).map(({ key, label, align, sortable }) => sortable ? (
                 <th
-                  key={col}
+                  key={key}
                   className={`px-6 py-3 text-${align} cursor-pointer select-none hover:text-gray-300 transition-colors`}
-                  onClick={() => handleSort(col)}
+                  onClick={() => handleSort(sortable)}
                 >
                   <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
                     {label}
                     <span className="text-gray-600">
-                      {sortCol === col ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ' ↕'}
+                      {sortCol === sortable ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ' ↕'}
                     </span>
                   </span>
                 </th>
+              ) : (
+                <th key={key} className={`px-6 py-3 text-${align}`}>{label}</th>
               ))}
             </tr>
           </thead>
@@ -680,8 +755,8 @@ function TopMovers({
               const g = r.gainLoss >= 0
               return (
                 <tr key={r.symbol} className="hover:bg-gray-800/40 transition-colors">
-                  <td className="px-6 py-3 text-xs text-gray-500">{idx + 1}</td>
-                  <td className="px-6 py-3 font-semibold">
+                  {visibleColumns.rank && <td className="px-6 py-3 text-xs text-gray-500">{idx + 1}</td>}
+                  {visibleColumns.symbol && <td className="px-6 py-3 font-semibold">
                     <Link
                       to="/history/$symbol"
                       params={{ symbol: r.symbol }}
@@ -689,11 +764,11 @@ function TopMovers({
                     >
                       {r.symbol}
                     </Link>
-                  </td>
-                  <td className="px-6 py-3 text-gray-400 text-xs max-w-[12rem] truncate" title={r.sector ?? undefined}>
+                  </td>}
+                  {visibleColumns.sector && <td className="px-6 py-3 text-gray-400 text-xs max-w-[12rem] truncate" title={r.sector ?? undefined}>
                     {r.sector ?? '—'}
-                  </td>
-                  <td className="px-6 py-3 text-right text-gray-300">
+                  </td>}
+                  {visibleColumns.shares && <td className="px-6 py-3 text-right text-gray-300">
                     <div className="relative inline-block group">
                       <span className="cursor-default underline decoration-dotted decoration-gray-600 underline-offset-2">
                         {r.shares.toLocaleString()}
@@ -708,19 +783,19 @@ function TopMovers({
                         </div>
                       </div>
                     </div>
-                  </td>
-                  <td className="px-6 py-3 text-right text-gray-300">{fmt(r.invested)}</td>
-                  <td className="px-6 py-3 text-right text-gray-300">{fmt(r.current)}</td>
-                  <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
+                  </td>}
+                  {visibleColumns.invested && <td className="px-6 py-3 text-right text-gray-300">{fmt(r.invested)}</td>}
+                  {visibleColumns.current && <td className="px-6 py-3 text-right text-gray-300">{fmt(r.current)}</td>}
+                  {visibleColumns.gainLoss && <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
                     {g ? '+' : ''}{fmt(r.gainLoss)}
-                  </td>
-                  <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
+                  </td>}
+                  {visibleColumns.pct && <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
                     {g ? '+' : ''}{r.pct.toFixed(2)}%
-                  </td>
-                  <td className="px-6 py-3 text-right text-xs">
+                  </td>}
+                  {visibleColumns.buyRange && <td className="px-6 py-3 text-right text-xs">
                     <GoodBuyPriceCell avgCost={r.avgCost} currentPrice={r.currentPrice} />
-                  </td>
-                  <td className="px-6 py-3 text-right">
+                  </td>}
+                  {visibleColumns.divYield && <td className="px-6 py-3 text-right">
                     {r.divYield !== null ? (
                       <div>
                         <span className="font-medium text-emerald-400">{r.divYield.toFixed(2)}%</span>
@@ -733,7 +808,7 @@ function TopMovers({
                     ) : (
                       <span className="text-gray-500">—</span>
                     )}
-                  </td>
+                  </td>}
                 </tr>
               )
             })}
