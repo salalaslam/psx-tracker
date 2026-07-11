@@ -15,7 +15,9 @@ import { Line } from 'react-chartjs-2'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
+import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
+import { buyPriceStatusRank, calcGoodBuyPrice } from '../goodBuyPrice'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
 
@@ -538,7 +540,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   )
 }
 
-type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield'
+type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield' | 'buyRange'
 
 function TopMovers({
   holdings,
@@ -597,8 +599,14 @@ function TopMovers({
         eventCount: dividendCount,
       })
       const dps = dividendPerShare(dividendNet, dividendShares)
+      const avgCost = r.shares > 0 ? r.invested / r.shares : 0
+      const currentPrice = r.shares > 0 ? r.current / r.shares : null
+      const buyRangeStatus = calcGoodBuyPrice(avgCost, currentPrice)?.status ?? null
       return {
         ...r,
+        avgCost,
+        currentPrice,
+        buyRangeStatus,
         gainLoss: r.current - r.invested,
         pct: ((r.current - r.invested) / r.invested) * 100,
         dividendNet,
@@ -622,6 +630,7 @@ function TopMovers({
         const bv = b.divYield ?? -1
         cmp = av - bv
       }
+      else if (sortCol === 'buyRange') cmp = buyPriceStatusRank(a.buyRangeStatus) - buyPriceStatusRank(b.buyRangeStatus)
       return sortDir === 'desc' ? -cmp : cmp
     })
 
@@ -648,6 +657,7 @@ function TopMovers({
                 { col: 'current' as SortCol, label: 'Current (₨)', align: 'right' },
                 { col: 'gainLoss' as SortCol, label: 'P&L (₨)', align: 'right' },
                 { col: 'pct' as SortCol, label: 'Return', align: 'right' },
+                { col: 'buyRange' as SortCol, label: 'Good Buy Range', align: 'right' },
                 { col: 'divYield' as SortCol, label: 'Div. Yield', align: 'right' },
               ] as const).map(({ col, label, align }) => (
                 <th
@@ -706,6 +716,9 @@ function TopMovers({
                   </td>
                   <td className={`px-6 py-3 text-right font-medium ${g ? 'text-emerald-400' : 'text-red-400'}`}>
                     {g ? '+' : ''}{r.pct.toFixed(2)}%
+                  </td>
+                  <td className="px-6 py-3 text-right text-xs">
+                    <GoodBuyPriceCell avgCost={r.avgCost} currentPrice={r.currentPrice} />
                   </td>
                   <td className="px-6 py-3 text-right">
                     {r.divYield !== null ? (
