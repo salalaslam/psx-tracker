@@ -234,6 +234,49 @@ export interface HoldingWithPrice extends Holding {
   sector: string | null
 }
 
+export interface GainPosition {
+  account: string
+  symbol: string
+  sector: string | null
+  shares: number
+  cost_avg: number
+  total_invested: number
+  latest_price: number
+  latest_fetched_at: string
+  first_invested_at: string | null
+}
+
+export function getGainPositions(): GainPosition[] {
+  return db.prepare(`
+    SELECT
+      h.account,
+      h.symbol,
+      st.sector,
+      h.shares,
+      h.cost_avg,
+      h.total_invested,
+      latest.price AS latest_price,
+      latest.fetched_at AS latest_fetched_at,
+      first_buy.first_invested_at
+    FROM holdings h
+    INNER JOIN price_snapshots latest
+      ON latest.symbol = h.symbol
+      AND latest.fetched_at = (
+        SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = h.symbol
+      )
+    LEFT JOIN stocks st ON st.symbol = h.symbol
+    LEFT JOIN (
+      SELECT account, symbol, MIN(traded_at) AS first_invested_at
+      FROM transactions
+      WHERE side = 'buy'
+      GROUP BY account, symbol
+    ) first_buy
+      ON first_buy.account = h.account AND first_buy.symbol = h.symbol
+    WHERE (h.shares * latest.price) > h.total_invested
+    ORDER BY ((h.shares * latest.price) - h.total_invested) DESC
+  `).all() as GainPosition[]
+}
+
 export function upsertStockSector(symbol: string, sector: string): void {
   db.prepare(
     `INSERT INTO stocks (symbol, sector) VALUES (?, ?)
