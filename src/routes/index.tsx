@@ -12,13 +12,15 @@ import {
 } from 'chart.js'
 import { useEffect, useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
-import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
+import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetHoldingsMarketMetrics, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
+import type { HoldingMarketMetrics } from '../valueResearch'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut } from '../components/AllocationDonut'
 import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
 import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
+import { PriceValuationCell } from '../components/PriceValuationCell'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
-import { buyPriceStatusRank, calcGoodBuyPrice } from '../goodBuyPrice'
+import { buyPriceStatusRank, calcGoodBuyPrice, calcPriceValuation, priceValuationRank } from '../goodBuyPrice'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
 
@@ -34,13 +36,14 @@ export const Route = createFileRoute('/')({
     })
     await Promise.all(holdingsPromises)
     
-    const [prices, portfolioHistory, dividendTotals] = await Promise.all([
+    const [prices, portfolioHistory, dividendTotals, marketMetrics] = await Promise.all([
       serverGetLatestPrices(),
       serverGetPortfolioHistory(),
       serverGetAllDividendTotals(),
+      serverGetHoldingsMarketMetrics(),
     ])
     
-    return { accounts, holdings, prices, portfolioHistory, dividendTotals }
+    return { accounts, holdings, prices, portfolioHistory, dividendTotals, marketMetrics }
   },
   component: Dashboard,
 })
@@ -75,7 +78,7 @@ function fmtDateFull(sess: string): string {
 }
 
 function Dashboard() {
-  const { accounts, holdings, portfolioHistory, dividendTotals } = Route.useLoaderData()
+  const { accounts, holdings, portfolioHistory, dividendTotals, marketMetrics } = Route.useLoaderData()
   const [fetching, setFetching] = useState(false)
   const [fetchResults, setFetchResults] = useState<FetchResult[] | null>(null)
   const router = useRouter()
@@ -153,7 +156,11 @@ function Dashboard() {
       <PortfolioChart data={portfolioHistory} />
 
       {/* Holdings overview (all accounts combined, by return %) */}
-      <TopMovers holdings={allHoldings} dividendBySymbol={dividendTotals.by_symbol} />
+      <TopMovers
+        holdings={allHoldings}
+        dividendBySymbol={dividendTotals.by_symbol}
+        marketMetrics={marketMetrics}
+      />
     </div>
   )
 }
@@ -322,7 +329,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   )
 }
 
-type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield' | 'buyRange'
+type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield' | 'buyRange' | 'peRatio' | 'priceStatus' | 'liquidity'
 type HoldingColumn = 'rank' | SortCol
 
 const holdingColumns: ReadonlyArray<{
@@ -341,6 +348,9 @@ const holdingColumns: ReadonlyArray<{
   { key: 'pct', label: 'Return', align: 'right', sortable: 'pct' },
   { key: 'buyRange', label: 'Good Buy Range', align: 'right', sortable: 'buyRange' },
   { key: 'divYield', label: 'Div. Yield', align: 'right', sortable: 'divYield' },
+  { key: 'peRatio', label: 'P/E', align: 'right', sortable: 'peRatio' },
+  { key: 'priceStatus', label: 'Price Status', align: 'left', sortable: 'priceStatus' },
+  { key: 'liquidity', label: 'Liquidity', align: 'left', sortable: 'liquidity' },
 ]
 
 const defaultHoldingColumnVisibility = Object.fromEntries(
@@ -352,9 +362,11 @@ const holdingColumnStorageKey = 'dashboard-holdings-visible-columns'
 function TopMovers({
   holdings,
   dividendBySymbol,
+  marketMetrics,
 }: {
   holdings: HoldingWithPrice[]
-  dividendBySymbol: Record<string, { total_net: number; count: number }>
+  dividendBySymbol: Record<string, { total_net: number; count: number; total_shares?: number | null }>
+  marketMetrics: Record<string, HoldingMarketMetrics>
 }) {
   const [sortCol, setSortCol] = useState<SortCol>('pct')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
@@ -442,11 +454,14 @@ function TopMovers({
       const avgCost = r.shares > 0 ? r.invested / r.shares : 0
       const currentPrice = r.shares > 0 ? r.current / r.shares : null
       const buyRangeStatus = calcGoodBuyPrice(avgCost, currentPrice)?.status ?? null
+      const priceValuation = calcPriceValuation(avgCost, currentPrice)
+      const metrics = marketMetrics[r.symbol]
       return {
         ...r,
         avgCost,
         currentPrice,
         buyRangeStatus,
+        priceValuation,
         gainLoss: r.current - r.invested,
         pct: ((r.current - r.invested) / r.invested) * 100,
         dividendNet,
@@ -454,6 +469,8 @@ function TopMovers({
         dividendShares,
         divYield,
         dps,
+        peRatio: metrics?.peRatio ?? null,
+        liquid: metrics?.liquid ?? false,
       }
     })
     .sort((a, b) => {
@@ -471,6 +488,13 @@ function TopMovers({
         cmp = av - bv
       }
       else if (sortCol === 'buyRange') cmp = buyPriceStatusRank(a.buyRangeStatus) - buyPriceStatusRank(b.buyRangeStatus)
+      else if (sortCol === 'peRatio') {
+        const av = a.peRatio ?? Number.POSITIVE_INFINITY
+        const bv = b.peRatio ?? Number.POSITIVE_INFINITY
+        cmp = av - bv
+      }
+      else if (sortCol === 'priceStatus') cmp = priceValuationRank(a.priceValuation) - priceValuationRank(b.priceValuation)
+      else if (sortCol === 'liquidity') cmp = Number(a.liquid) - Number(b.liquid)
       return sortDir === 'desc' ? -cmp : cmp
     })
 
@@ -591,6 +615,30 @@ function TopMovers({
                       <span className="text-gray-500">—</span>
                     )}
                   </td>}
+                  {visibleColumns.peRatio && (
+                    <td className="px-6 py-3 text-right tabular-nums text-gray-300">
+                      {r.peRatio === null ? '—' : r.peRatio.toFixed(2)}
+                    </td>
+                  )}
+                  {visibleColumns.priceStatus && (
+                    <td className="px-6 py-3">
+                      <PriceValuationCell avgCost={r.avgCost} currentPrice={r.currentPrice} />
+                    </td>
+                  )}
+                  {visibleColumns.liquidity && (
+                    <td className="px-6 py-3">
+                      <span
+                        className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                          r.liquid
+                            ? 'bg-sky-950 text-sky-300 ring-1 ring-sky-800/70'
+                            : 'bg-gray-800 text-gray-400'
+                        }`}
+                        title={r.liquid ? 'KMI30 constituent' : 'Not in KMI30'}
+                      >
+                        {r.liquid ? 'Liquid' : 'Illiquid'}
+                      </span>
+                    </td>
+                  )}
                 </tr>
               )
             })}

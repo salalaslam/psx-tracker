@@ -8,6 +8,7 @@ export const GOOD_BUY_UPPER_PCT = 1.0
 export const GOOD_BUY_WARN_PCT = 1.1
 
 export type BuyPriceStatus = 'green' | 'yellow' | 'red'
+export type PriceValuation = 'underpriced' | 'fair' | 'overpriced'
 
 export interface GoodBuyPriceInfo {
   lower: number
@@ -37,6 +38,26 @@ export function buyPriceStatusRank(status: BuyPriceStatus | null): number {
   if (status === 'green') return 0
   if (status === 'yellow') return 1
   if (status === 'red') return 2
+  return 3
+}
+
+/** Classify the current price against the displayed good-buy range. */
+export function calcPriceValuation(
+  avgCost: number,
+  currentPrice: number | null,
+): PriceValuation | null {
+  const buyPrice = calcGoodBuyPrice(avgCost, currentPrice)
+  if (!buyPrice || currentPrice === null) return null
+
+  if (currentPrice < buyPrice.lower) return 'underpriced'
+  if (currentPrice <= buyPrice.upper) return 'fair'
+  return 'overpriced'
+}
+
+export function priceValuationRank(valuation: PriceValuation | null): number {
+  if (valuation === 'underpriced') return 0
+  if (valuation === 'fair') return 1
+  if (valuation === 'overpriced') return 2
   return 3
 }
 

@@ -57,6 +57,13 @@ export interface ScreenScore {
   yearsAnalysed: number
 }
 
+/** Lightweight P/E + KMI30 liquidity flags for the dashboard holdings table. */
+export interface HoldingMarketMetrics {
+  peRatio: number | null
+  /** KMI30 = liquid (impact-cost-ranked) subset; otherwise illiquid for screening. */
+  liquid: boolean
+}
+
 export interface HoldingResearchRow {
   symbol: string
   name: string
@@ -426,7 +433,7 @@ const ENERGY_SECTORS = new Set([
 ])
 
 /** PSX/N-610 constituents, effective 25 May 2026. Used only when live membership is unavailable. */
-const CURRENT_KMI30_SYMBOLS = new Set([
+export const CURRENT_KMI30_SYMBOLS = new Set([
   'AIRLINK',
   'ATRL',
   'CPHL',

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { buyPriceStatusRank, calcGoodBuyPrice } from './goodBuyPrice'
+import {
+  buyPriceStatusRank,
+  calcGoodBuyPrice,
+  calcPriceValuation,
+  priceValuationRank,
+} from './goodBuyPrice'
 
 describe('calcGoodBuyPrice', () => {
   it('returns null when avg cost or price is missing', () => {
@@ -35,5 +40,26 @@ describe('buyPriceStatusRank', () => {
   it('orders green before yellow before red', () => {
     expect(buyPriceStatusRank('green')).toBeLessThan(buyPriceStatusRank('yellow'))
     expect(buyPriceStatusRank('yellow')).toBeLessThan(buyPriceStatusRank('red'))
+  })
+})
+
+describe('calcPriceValuation', () => {
+  it('compares the current price with the good-buy range', () => {
+    expect(calcPriceValuation(100, 84.99)).toBe('underpriced')
+    expect(calcPriceValuation(100, 85)).toBe('fair')
+    expect(calcPriceValuation(100, 100)).toBe('fair')
+    expect(calcPriceValuation(100, 100.01)).toBe('overpriced')
+  })
+
+  it('returns null when the range cannot be calculated', () => {
+    expect(calcPriceValuation(0, 100)).toBeNull()
+    expect(calcPriceValuation(100, null)).toBeNull()
+  })
+})
+
+describe('priceValuationRank', () => {
+  it('orders underpriced before fair before overpriced', () => {
+    expect(priceValuationRank('underpriced')).toBeLessThan(priceValuationRank('fair'))
+    expect(priceValuationRank('fair')).toBeLessThan(priceValuationRank('overpriced'))
   })
 })

@@ -6,10 +6,14 @@ import {
 } from './psxResearch.server'
 import {
   buildValueResearchReport,
+  CURRENT_KMI30_SYMBOLS,
+  type HoldingMarketMetrics,
   type ResearchFundamentalsInput,
   type ResearchHoldingInput,
   type ValueResearchReport,
 } from './valueResearch'
+
+export type { HoldingMarketMetrics }
 
 async function mapWithConcurrency<T, R>(
   items: T[],
@@ -58,6 +62,38 @@ function toFundamentalInput(result: PsxCompanyFundamentalsResult): ResearchFunda
     annualMetrics: result.annualMetrics,
     source: result.source,
   }
+}
+
+export async function getHoldingsMarketMetrics(): Promise<Record<string, HoldingMarketMetrics>> {
+  const accounts = getAllAccounts()
+  const holdings = accounts.flatMap(account => getHoldings(account))
+  const symbols = [...new Set(holdings.map(holding => holding.symbol.trim().toUpperCase()))]
+
+  if (symbols.length === 0) return {}
+
+  const [listingsResult, companyResults] = await Promise.all([
+    fetchPsxListings(),
+    mapWithConcurrency(symbols, 8, symbol => fetchPsxCompanyFundamentals(symbol), 18_000),
+  ])
+
+  const listingBySymbol = new Map(listingsResult.listings.map(listing => [listing.symbol, listing]))
+  const peBySymbol = new Map(companyResults.map(result => [result.symbol, result.peRatio]))
+
+  return Object.fromEntries(
+    symbols.map(symbol => {
+      const listing = listingBySymbol.get(symbol)
+      const liquid = listing
+        ? listing.indices.includes('KMI30')
+        : CURRENT_KMI30_SYMBOLS.has(symbol)
+      return [
+        symbol,
+        {
+          peRatio: peBySymbol.get(symbol) ?? null,
+          liquid,
+        } satisfies HoldingMarketMetrics,
+      ]
+    }),
+  )
 }
 
 export async function getValueResearchReport(): Promise<ValueResearchReport> {
