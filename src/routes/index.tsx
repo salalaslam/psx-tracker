@@ -20,7 +20,6 @@ import { AllocationDonut } from '../components/AllocationDonut'
 import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
 import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
 import { PriceValuationCell } from '../components/PriceValuationCell'
-import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 import { buyPriceStatusRank, calcGoodBuyPrice, calcPriceValuation, priceValuationRank } from '../goodBuyPrice'
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Tooltip, Legend, Filler)
@@ -619,7 +618,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
   )
 }
 
-type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'divYield' | 'buyRange' | 'peRatio' | 'priceStatus' | 'liquidity'
+type SortCol = 'symbol' | 'sector' | 'shares' | 'invested' | 'current' | 'gainLoss' | 'pct' | 'dividendReceived' | 'buyRange' | 'peRatio' | 'priceStatus' | 'liquidity'
 type HoldingColumn = 'rank' | SortCol
 
 const holdingColumns: ReadonlyArray<{
@@ -637,7 +636,7 @@ const holdingColumns: ReadonlyArray<{
   { key: 'gainLoss', label: 'P&L (₨)', align: 'right', sortable: 'gainLoss' },
   { key: 'pct', label: 'Return', align: 'right', sortable: 'pct' },
   { key: 'buyRange', label: 'Good Buy Range', align: 'right', sortable: 'buyRange' },
-  { key: 'divYield', label: 'Div. Yield', align: 'right', sortable: 'divYield' },
+  { key: 'dividendReceived', label: 'Dividends Received (₨)', align: 'right', sortable: 'dividendReceived' },
   { key: 'peRatio', label: 'P/E', align: 'right', sortable: 'peRatio' },
   { key: 'priceStatus', label: 'Price Status', align: 'left', sortable: 'priceStatus' },
   { key: 'liquidity', label: 'Liquidity', align: 'left', sortable: 'liquidity' },
@@ -732,15 +731,6 @@ function TopMovers({
       const div = dividendBySymbol[r.symbol]
       const dividendNet = div?.total_net ?? 0
       const dividendCount = div?.count ?? 0
-      const dividendShares = div?.total_shares ?? null
-      const divYield = calcDividendYieldOnCost({
-        totalNet: dividendNet,
-        totalDividendShares: dividendShares,
-        invested: r.invested,
-        holdingShares: r.shares,
-        eventCount: dividendCount,
-      })
-      const dps = dividendPerShare(dividendNet, dividendShares)
       const avgCost = r.shares > 0 ? r.invested / r.shares : 0
       const currentPrice = r.shares > 0 ? r.current / r.shares : null
       const buyRangeStatus = calcGoodBuyPrice(avgCost, currentPrice)?.status ?? null
@@ -756,9 +746,6 @@ function TopMovers({
         pct: ((r.current - r.invested) / r.invested) * 100,
         dividendNet,
         dividendCount,
-        dividendShares,
-        divYield,
-        dps,
         peRatio: metrics?.peRatio ?? null,
         liquid: metrics?.liquid ?? false,
       }
@@ -772,11 +759,7 @@ function TopMovers({
       else if (sortCol === 'current') cmp = a.current - b.current
       else if (sortCol === 'gainLoss') cmp = a.gainLoss - b.gainLoss
       else if (sortCol === 'pct') cmp = a.pct - b.pct
-      else if (sortCol === 'divYield') {
-        const av = a.divYield ?? -1
-        const bv = b.divYield ?? -1
-        cmp = av - bv
-      }
+      else if (sortCol === 'dividendReceived') cmp = a.dividendNet - b.dividendNet
       else if (sortCol === 'buyRange') cmp = buyPriceStatusRank(a.buyRangeStatus) - buyPriceStatusRank(b.buyRangeStatus)
       else if (sortCol === 'peRatio') {
         const av = a.peRatio ?? Number.POSITIVE_INFINITY
@@ -891,15 +874,11 @@ function TopMovers({
                   {visibleColumns.buyRange && <td className="px-6 py-3 text-right text-xs">
                     <GoodBuyPriceCell avgCost={r.avgCost} currentPrice={r.currentPrice} />
                   </td>}
-                  {visibleColumns.divYield && <td className="px-6 py-3 text-right">
-                    {r.divYield !== null ? (
+                  {visibleColumns.dividendReceived && <td className="px-6 py-3 text-right">
+                    {r.dividendCount > 0 ? (
                       <div>
-                        <span className="font-medium text-emerald-400">{r.divYield.toFixed(2)}%</span>
-                        <p className="text-xs text-gray-500">
-                          {r.dps != null
-                            ? `₨ ${r.dps.toFixed(2)}/sh`
-                            : `₨ ${fmt(r.dividendNet)}`}
-                        </p>
+                        <span className="font-medium text-emerald-400">₨ {fmt(r.dividendNet)}</span>
+                        <p className="text-xs text-gray-500">{r.dividendCount} {r.dividendCount === 1 ? 'payment' : 'payments'}</p>
                       </div>
                     ) : (
                       <span className="text-gray-500">—</span>
