@@ -68,6 +68,14 @@ db.exec(`
     sector  TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS interested_symbols (
+    symbol      TEXT PRIMARY KEY,
+    fair_value  REAL NOT NULL CHECK (fair_value > 0),
+    notes       TEXT,
+    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+  );
+
   CREATE TABLE IF NOT EXISTS dividends (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     account         TEXT    NOT NULL,
@@ -234,6 +242,17 @@ export interface HoldingWithPrice extends Holding {
   sector: string | null
 }
 
+export interface InterestedSymbol {
+  symbol: string
+  fair_value: number
+  notes: string | null
+  created_at: string
+  updated_at: string
+  latest_price: number | null
+  latest_fetched_at: string | null
+  sector: string | null
+}
+
 export interface GainPosition {
   account: string
   symbol: string
@@ -298,11 +317,15 @@ export function upsertStockSector(symbol: string, sector: string): void {
 
 export function getSymbolsMissingSector(): string[] {
   return (db.prepare(`
-    SELECT DISTINCT h.symbol
-    FROM holdings h
-    LEFT JOIN stocks s ON s.symbol = h.symbol
+    SELECT tracked.symbol
+    FROM (
+      SELECT symbol FROM holdings
+      UNION
+      SELECT symbol FROM interested_symbols
+    ) tracked
+    LEFT JOIN stocks s ON s.symbol = tracked.symbol
     WHERE s.symbol IS NULL
-    ORDER BY h.symbol
+    ORDER BY tracked.symbol
   `).all() as { symbol: string }[]).map(r => r.symbol)
 }
 
@@ -343,8 +366,72 @@ export function createAccount(name: string): boolean {
 }
 
 export function getAllSymbols(): string[] {
-  return (db.prepare('SELECT DISTINCT symbol FROM holdings ORDER BY symbol').all() as { symbol: string }[])
+  return (db.prepare(`
+    SELECT symbol FROM holdings
+    UNION
+    SELECT symbol FROM interested_symbols
+    ORDER BY symbol
+  `).all() as { symbol: string }[])
     .map(r => r.symbol)
+}
+
+export function getInterestedSymbols(): InterestedSymbol[] {
+  return db.prepare(`
+    SELECT
+      interested.symbol,
+      interested.fair_value,
+      interested.notes,
+      interested.created_at,
+      interested.updated_at,
+      latest.price AS latest_price,
+      latest.fetched_at AS latest_fetched_at,
+      stocks.sector
+    FROM interested_symbols interested
+    LEFT JOIN price_snapshots latest
+      ON latest.symbol = interested.symbol
+      AND latest.fetched_at = (
+        SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = interested.symbol
+      )
+    LEFT JOIN stocks ON stocks.symbol = interested.symbol
+    WHERE NOT EXISTS (
+      SELECT 1 FROM holdings WHERE holdings.symbol = interested.symbol
+    )
+    ORDER BY interested.updated_at DESC, interested.symbol ASC
+  `).all() as InterestedSymbol[]
+}
+
+export function upsertInterestedSymbol(input: {
+  symbol: string
+  fair_value: number
+  notes?: string | null
+}): { ok: boolean; error?: string } {
+  const symbol = input.symbol.trim().toUpperCase()
+  const fairValue = Number(input.fair_value)
+  const notes = input.notes?.trim() || null
+
+  if (!symbol) return { ok: false, error: 'Symbol is required' }
+  if (!Number.isFinite(fairValue) || fairValue <= 0) {
+    return { ok: false, error: 'Fair value must be a positive number' }
+  }
+  if (db.prepare('SELECT 1 FROM holdings WHERE symbol = ?').get(symbol)) {
+    return { ok: false, error: `${symbol} is already in your holdings` }
+  }
+
+  db.prepare(`
+    INSERT INTO interested_symbols (symbol, fair_value, notes)
+    VALUES (?, ?, ?)
+    ON CONFLICT(symbol) DO UPDATE SET
+      fair_value = excluded.fair_value,
+      notes = excluded.notes,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+  `).run(symbol, fairValue, notes)
+
+  return { ok: true }
+}
+
+export function deleteInterestedSymbol(symbol: string): boolean {
+  return db.prepare('DELETE FROM interested_symbols WHERE symbol = ?')
+    .run(symbol.trim().toUpperCase()).changes > 0
 }
 
 export function storeSnapshot(symbol: string, price: number): void {
@@ -763,6 +850,7 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
 
     if (side === 'buy') {
       applyBuyToHolding(account, symbol, shares, costPerShare)
+      db.prepare('DELETE FROM interested_symbols WHERE symbol = ?').run(symbol)
       return { ok: true }
     }
 

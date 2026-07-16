@@ -8,6 +8,7 @@ import {
   deleteAccountCharge,
   deleteCorporateEvent,
   deleteDividend,
+  deleteInterestedSymbol,
   getAccountChargeSummary,
   getAccountCharges,
   getAllAccounts,
@@ -19,6 +20,7 @@ import {
   getDividendSummary,
   getDividends,
   getHoldings,
+  getInterestedSymbols,
   getGainPositions,
   getLatestPrices,
   getPortfolioValueHistory,
@@ -28,6 +30,7 @@ import {
   hasStockSector,
   importDividends,
   storeSnapshot,
+  upsertInterestedSymbol,
   upsertStockSector,
 } from './db.server'
 import { isAccountChargeCategory } from './accountCharges'
@@ -143,6 +146,43 @@ export const serverAddTrade = createServerFn({ method: 'POST' })
 export const serverGetLatestPrices = createServerFn({ method: 'GET' }).handler(
   async () => getLatestPrices(),
 )
+
+export const serverGetInterestedSymbols = createServerFn({ method: 'GET' }).handler(
+  async () => getInterestedSymbols(),
+)
+
+export const serverUpsertInterestedSymbol = createServerFn({ method: 'POST' })
+  .validator((input: unknown) => {
+    const parsed = (input ?? {}) as Record<string, unknown>
+    const symbol = String(parsed.symbol ?? '').trim().toUpperCase()
+    const fair_value = Number(parsed.fair_value)
+    const notes = String(parsed.notes ?? '').trim() || null
+
+    if (!/^[A-Z0-9.-]{1,20}$/.test(symbol)) throw new Error('Enter a valid PSX symbol')
+    if (!Number.isFinite(fair_value) || fair_value <= 0) {
+      throw new Error('Fair value must be a positive number')
+    }
+    if (notes && notes.length > 240) throw new Error('Notes must be 240 characters or fewer')
+
+    return { symbol, fair_value, notes }
+  })
+  .handler(async ({ data }) => {
+    const result = upsertInterestedSymbol(data)
+    if (!result.ok) throw new Error(result.error)
+
+    const { price, sector } = await fetchPsxQuote(data.symbol)
+    if (price !== null) storeSnapshot(data.symbol, price)
+    if (sector) upsertStockSector(data.symbol, sector)
+    return { ok: true, priceStored: price !== null }
+  })
+
+export const serverDeleteInterestedSymbol = createServerFn({ method: 'POST' })
+  .validator((symbol: unknown) => {
+    const normalized = String(symbol).trim().toUpperCase()
+    if (!/^[A-Z0-9.-]{1,20}$/.test(normalized)) throw new Error('Invalid PSX symbol')
+    return normalized
+  })
+  .handler(async ({ data }) => ({ ok: deleteInterestedSymbol(data) }))
 
 export const serverGetPriceHistory = createServerFn({ method: 'GET' })
   .validator((symbol: unknown) => String(symbol))

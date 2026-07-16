@@ -10,12 +10,12 @@ import {
   Tooltip,
   type ChartOptions,
 } from 'chart.js'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Line } from 'react-chartjs-2'
-import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetHoldingsMarketMetrics, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
 import { SortIndicator } from '../components/SortIndicator'
+import { serverDeleteInterestedSymbol, serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetHoldingsMarketMetrics, serverGetInterestedSymbols, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, serverUpsertInterestedSymbol, type FetchResult } from '../serverFns'
 import type { HoldingMarketMetrics } from '../valueResearch'
-import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
+import type { HoldingWithPrice, InterestedSymbol, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut } from '../components/AllocationDonut'
 import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
 import { GoodBuyPriceCell } from '../components/GoodBuyPriceCell'
@@ -37,14 +37,15 @@ export const Route = createFileRoute('/')({
     })
     await Promise.all(holdingsPromises)
     
-    const [prices, portfolioHistory, dividendTotals, marketMetrics] = await Promise.all([
+    const [prices, portfolioHistory, dividendTotals, marketMetrics, interestedSymbols] = await Promise.all([
       serverGetLatestPrices(),
       serverGetPortfolioHistory(),
       serverGetAllDividendTotals(),
       serverGetHoldingsMarketMetrics(),
+      serverGetInterestedSymbols(),
     ])
     
-    return { accounts, holdings, prices, portfolioHistory, dividendTotals, marketMetrics }
+    return { accounts, holdings, prices, portfolioHistory, dividendTotals, marketMetrics, interestedSymbols }
   },
   component: Dashboard,
 })
@@ -79,7 +80,7 @@ function fmtDateFull(sess: string): string {
 }
 
 function Dashboard() {
-  const { accounts, holdings, portfolioHistory, dividendTotals, marketMetrics } = Route.useLoaderData()
+  const { accounts, holdings, portfolioHistory, dividendTotals, marketMetrics, interestedSymbols } = Route.useLoaderData()
   const [fetching, setFetching] = useState(false)
   const [fetchResults, setFetchResults] = useState<FetchResult[] | null>(null)
   const router = useRouter()
@@ -153,6 +154,11 @@ function Dashboard() {
         dividendTotals={dividendTotals}
       />
 
+      <InterestedSymbols
+        symbols={interestedSymbols}
+        marketMetrics={marketMetrics}
+      />
+
       {/* Portfolio value chart */}
       <PortfolioChart data={portfolioHistory} />
 
@@ -163,6 +169,289 @@ function Dashboard() {
         marketMetrics={marketMetrics}
       />
     </div>
+  )
+}
+
+function InterestedSymbols({
+  symbols,
+  marketMetrics,
+}: {
+  symbols: InterestedSymbol[]
+  marketMetrics: Record<string, HoldingMarketMetrics>
+}) {
+  const router = useRouter()
+  const [symbol, setSymbol] = useState('')
+  const [fairValue, setFairValue] = useState('')
+  const [notes, setNotes] = useState('')
+  const [editingSymbol, setEditingSymbol] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [removing, setRemoving] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const rows = useMemo(
+    () => symbols
+      .map(item => {
+        const valuation = calcPriceValuation(item.fair_value, item.latest_price)
+        const versusFairPct = item.latest_price === null
+          ? null
+          : ((item.latest_price - item.fair_value) / item.fair_value) * 100
+        return {
+          ...item,
+          valuation,
+          versusFairPct,
+          metrics: marketMetrics[item.symbol],
+        }
+      })
+      .sort((a, b) => {
+        const valuationOrder = priceValuationRank(a.valuation) - priceValuationRank(b.valuation)
+        if (valuationOrder !== 0) return valuationOrder
+        return (a.versusFairPct ?? Number.POSITIVE_INFINITY) - (b.versusFairPct ?? Number.POSITIVE_INFINITY)
+      }),
+    [symbols, marketMetrics],
+  )
+
+  function resetForm() {
+    setSymbol('')
+    setFairValue('')
+    setNotes('')
+    setEditingSymbol(null)
+    setError(null)
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const cleanSymbol = symbol.trim().toUpperCase()
+    const parsedFairValue = Number(fairValue)
+    if (!cleanSymbol) {
+      setError('Symbol is required')
+      return
+    }
+    if (!Number.isFinite(parsedFairValue) || parsedFairValue <= 0) {
+      setError('Fair value must be a positive number')
+      return
+    }
+
+    setSaving(true)
+    setError(null)
+    try {
+      await serverUpsertInterestedSymbol({
+        data: { symbol: cleanSymbol, fair_value: parsedFairValue, notes },
+      })
+      resetForm()
+      await router.invalidate()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not save the symbol')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  function startEditing(item: InterestedSymbol) {
+    setEditingSymbol(item.symbol)
+    setSymbol(item.symbol)
+    setFairValue(String(item.fair_value))
+    setNotes(item.notes ?? '')
+    setError(null)
+  }
+
+  async function handleRemove(symbolToRemove: string) {
+    setRemoving(symbolToRemove)
+    setError(null)
+    try {
+      await serverDeleteInterestedSymbol({ data: symbolToRemove })
+      if (editingSymbol === symbolToRemove) resetForm()
+      await router.invalidate()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not remove ${symbolToRemove}`)
+    } finally {
+      setRemoving(null)
+    }
+  }
+
+  return (
+    <section className="overflow-hidden rounded-xl border border-amber-900/60 bg-gray-900">
+      <div className="border-b border-gray-800 px-6 py-4">
+        <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-gray-200">Interested in investing</h2>
+              <span className="rounded-full bg-amber-950 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-300 ring-1 ring-amber-800/70">
+                Not held
+              </span>
+            </div>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Track entry timing against your fair-value estimate; these symbols are excluded from portfolio totals.
+            </p>
+          </div>
+          <p className="text-xs text-gray-500">{symbols.length} {symbols.length === 1 ? 'symbol' : 'symbols'} watched</p>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-4 grid gap-3 lg:grid-cols-[8rem_10rem_minmax(12rem,1fr)_auto]">
+          <label className="block">
+            <span className="sr-only">PSX symbol</span>
+            <input
+              value={symbol}
+              onChange={event => setSymbol(event.target.value.toUpperCase())}
+              disabled={editingSymbol !== null}
+              placeholder="Symbol e.g. MEBL"
+              maxLength={20}
+              className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm uppercase text-white outline-none placeholder:normal-case placeholder:text-gray-600 focus:border-amber-500 disabled:cursor-not-allowed disabled:text-gray-500"
+            />
+          </label>
+          <label className="block">
+            <span className="sr-only">Fair value per share</span>
+            <input
+              type="number"
+              inputMode="decimal"
+              min="0.01"
+              step="0.01"
+              value={fairValue}
+              onChange={event => setFairValue(event.target.value)}
+              placeholder="Fair value (₨)"
+              className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-600 focus:border-amber-500"
+            />
+          </label>
+          <label className="block">
+            <span className="sr-only">Investment notes</span>
+            <input
+              value={notes}
+              onChange={event => setNotes(event.target.value)}
+              placeholder="Notes or catalyst (optional)"
+              maxLength={240}
+              className="w-full rounded-lg border border-gray-700 bg-gray-950 px-3 py-2 text-sm text-white outline-none placeholder:text-gray-600 focus:border-amber-500"
+            />
+          </label>
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={saving}
+              className="whitespace-nowrap rounded-lg bg-amber-600 px-4 py-2 text-sm font-semibold text-gray-950 transition-colors hover:bg-amber-500 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {saving ? 'Saving…' : editingSymbol ? 'Save changes' : 'Add symbol'}
+            </button>
+            {editingSymbol && (
+              <button
+                type="button"
+                onClick={resetForm}
+                className="rounded-lg border border-gray-700 px-3 py-2 text-sm text-gray-300 hover:bg-gray-800"
+              >
+                Cancel
+              </button>
+            )}
+          </div>
+        </form>
+        {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="px-6 py-8 text-center">
+          <p className="text-sm font-medium text-gray-300">No symbols on your interested list yet.</p>
+          <p className="mt-1 text-xs text-gray-500">Add a PSX symbol and your fair-value estimate to start tracking an entry.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-800 text-xs uppercase tracking-wide text-gray-500">
+                <th className="px-5 py-3 text-left">Symbol</th>
+                <th className="px-5 py-3 text-left">Sector</th>
+                <th className="px-5 py-3 text-right">Current</th>
+                <th className="px-5 py-3 text-right">Fair value</th>
+                <th className="px-5 py-3 text-right">Vs fair</th>
+                <th className="px-5 py-3 text-right">Good buy range</th>
+                <th className="px-5 py-3 text-left">Price status</th>
+                <th className="px-5 py-3 text-right">P/E</th>
+                <th className="px-5 py-3 text-left">Liquidity</th>
+                <th className="px-5 py-3 text-left">Notes</th>
+                <th className="px-5 py-3 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {rows.map(item => {
+                const versusFair = item.versusFairPct
+                return (
+                  <tr key={item.symbol} className="transition-colors hover:bg-gray-800/40">
+                    <td className="px-5 py-3 font-semibold">
+                      <Link
+                        to="/history/$symbol"
+                        params={{ symbol: item.symbol }}
+                        className="text-amber-300 hover:text-amber-200"
+                      >
+                        {item.symbol}
+                      </Link>
+                    </td>
+                    <td className="max-w-[12rem] truncate px-5 py-3 text-xs text-gray-400" title={item.sector ?? undefined}>
+                      {item.sector ?? '—'}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-gray-200">
+                      {item.latest_price === null ? '—' : `₨ ${fmt(item.latest_price)}`}
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-gray-300">₨ {fmt(item.fair_value)}</td>
+                    <td className={`px-5 py-3 text-right font-medium tabular-nums ${
+                      versusFair === null
+                        ? 'text-gray-500'
+                        : versusFair < 0
+                          ? 'text-emerald-400'
+                          : versusFair > 0
+                            ? 'text-red-400'
+                            : 'text-sky-400'
+                    }`}>
+                      {versusFair === null
+                        ? '—'
+                        : versusFair < 0
+                          ? `${Math.abs(versusFair).toFixed(1)}% below`
+                          : versusFair > 0
+                            ? `${versusFair.toFixed(1)}% above`
+                            : 'At fair'}
+                    </td>
+                    <td className="px-5 py-3 text-right text-xs">
+                      <GoodBuyPriceCell avgCost={item.fair_value} currentPrice={item.latest_price} />
+                    </td>
+                    <td className="px-5 py-3">
+                      <PriceValuationCell avgCost={item.fair_value} currentPrice={item.latest_price} />
+                    </td>
+                    <td className="px-5 py-3 text-right tabular-nums text-gray-300">
+                      {item.metrics?.peRatio == null ? '—' : item.metrics.peRatio.toFixed(2)}
+                    </td>
+                    <td className="px-5 py-3">
+                      <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                        item.metrics?.liquid
+                          ? 'bg-sky-950 text-sky-300 ring-1 ring-sky-800/70'
+                          : 'bg-gray-800 text-gray-400'
+                      }`}>
+                        {item.metrics?.liquid ? 'Liquid' : 'Illiquid'}
+                      </span>
+                    </td>
+                    <td className="max-w-[16rem] truncate px-5 py-3 text-xs text-gray-400" title={item.notes ?? undefined}>
+                      {item.notes ?? '—'}
+                    </td>
+                    <td className="px-5 py-3 text-right">
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEditing(item)}
+                          className="text-xs font-medium text-gray-400 hover:text-white"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleRemove(item.symbol)}
+                          disabled={removing === item.symbol}
+                          className="text-xs font-medium text-red-400 hover:text-red-300 disabled:opacity-50"
+                        >
+                          {removing === item.symbol ? 'Removing…' : 'Remove'}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   )
 }
 

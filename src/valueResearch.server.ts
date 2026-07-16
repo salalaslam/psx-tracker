@@ -1,4 +1,4 @@
-import { getAllAccounts, getAllDividendTotals, getHoldings } from './db.server'
+import { getAllAccounts, getAllDividendTotals, getAllSymbols, getHoldings } from './db.server'
 import {
   fetchPsxCompanyFundamentals,
   fetchPsxListings,
@@ -65,9 +65,7 @@ function toFundamentalInput(result: PsxCompanyFundamentalsResult): ResearchFunda
 }
 
 export async function getHoldingsMarketMetrics(): Promise<Record<string, HoldingMarketMetrics>> {
-  const accounts = getAllAccounts()
-  const holdings = accounts.flatMap(account => getHoldings(account))
-  const symbols = [...new Set(holdings.map(holding => holding.symbol.trim().toUpperCase()))]
+  const symbols = getAllSymbols()
 
   if (symbols.length === 0) return {}
 
