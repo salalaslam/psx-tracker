@@ -6,6 +6,7 @@ import {
   accountChargeCategoryLabel,
 } from '../accountCharges'
 import { serverAddAccountCharge, serverDeleteAccountCharge } from '../serverFns'
+import { SortIndicator } from './SortIndicator'
 
 function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -50,11 +51,6 @@ export function AccountCharges({
       setSortColumn(col)
       setSortDirection('asc')
     }
-  }
-
-  function sortIndicator(col: SortKey) {
-    if (sortColumn !== col) return ' ↕'
-    return sortDirection === 'asc' ? ' ↑' : ' ↓'
   }
 
   const sorted = [...charges].sort((a, b) => {
@@ -266,19 +262,19 @@ export function AccountCharges({
             <thead>
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wide text-gray-500">
                 <th className="px-5 py-3 cursor-pointer" onClick={() => toggleSort('charged_at')}>
-                  Date{sortIndicator('charged_at')}
+                  Date <SortIndicator active={sortColumn === 'charged_at'} direction={sortDirection} />
                 </th>
                 <th className="px-5 py-3 cursor-pointer" onClick={() => toggleSort('category')}>
-                  Type{sortIndicator('category')}
+                  Type <SortIndicator active={sortColumn === 'category'} direction={sortDirection} />
                 </th>
                 <th className="px-5 py-3 cursor-pointer" onClick={() => toggleSort('label')}>
-                  Description{sortIndicator('label')}
+                  Description <SortIndicator active={sortColumn === 'label'} direction={sortDirection} />
                 </th>
                 <th className="px-5 py-3 cursor-pointer" onClick={() => toggleSort('voucher_no')}>
-                  Voucher{sortIndicator('voucher_no')}
+                  Voucher <SortIndicator active={sortColumn === 'voucher_no'} direction={sortDirection} />
                 </th>
                 <th className="px-5 py-3 text-right cursor-pointer" onClick={() => toggleSort('amount')}>
-                  Amount{sortIndicator('amount')}
+                  Amount <SortIndicator active={sortColumn === 'amount'} direction={sortDirection} />
                 </th>
                 <th className="px-5 py-3 w-16" />
               </tr>

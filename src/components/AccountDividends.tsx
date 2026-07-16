@@ -8,6 +8,7 @@ import {
   serverImportDividends,
 } from '../serverFns'
 import { formatPaymentDate, parseDividendPaste } from '../dividends'
+import { SortIndicator } from './SortIndicator'
 
 function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -103,11 +104,6 @@ export function AccountDividends({
     if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir
     return String(av).localeCompare(String(bv)) * dir
   })
-
-  function sortIndicator(col: SortKey) {
-    if (sortColumn !== col) return ' ↕'
-    return sortDirection === 'asc' ? ' ↑' : ' ↓'
-  }
 
   async function handleAdd(e: React.FormEvent) {
     e.preventDefault()
@@ -449,52 +445,52 @@ export function AccountDividends({
                 <tr className="border-b border-gray-800 text-xs text-gray-500 uppercase tracking-wide">
                   <th className="px-4 py-3 text-left">
                     <button type="button" onClick={() => toggleSort('event_id')} className="hover:text-gray-300">
-                      Event ID{sortIndicator('event_id')}
+                      Event ID <SortIndicator active={sortColumn === 'event_id'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-left">
                     <button type="button" onClick={() => toggleSort('symbol')} className="hover:text-gray-300">
-                      Symbol{sortIndicator('symbol')}
+                      Symbol <SortIndicator active={sortColumn === 'symbol'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-left">
                     <button type="button" onClick={() => toggleSort('security_name')} className="hover:text-gray-300">
-                      Name{sortIndicator('security_name')}
+                      Name <SortIndicator active={sortColumn === 'security_name'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-center">
                     <button type="button" onClick={() => toggleSort('financial_year')} className="hover:text-gray-300">
-                      FY{sortIndicator('financial_year')}
+                      FY <SortIndicator active={sortColumn === 'financial_year'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('shares')} className="hover:text-gray-300">
-                      Shares{sortIndicator('shares')}
+                      Shares <SortIndicator active={sortColumn === 'shares'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('gross_amount')} className="hover:text-gray-300">
-                      Gross{sortIndicator('gross_amount')}
+                      Gross <SortIndicator active={sortColumn === 'gross_amount'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('net_amount')} className="hover:text-gray-300">
-                      Net{sortIndicator('net_amount')}
+                      Net <SortIndicator active={sortColumn === 'net_amount'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">
                     <button type="button" onClick={() => toggleSort('divYield')} className="hover:text-gray-300">
-                      Div. Yield{sortIndicator('divYield')}
+                      Div. Yield <SortIndicator active={sortColumn === 'divYield'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-center">
                     <button type="button" onClick={() => toggleSort('status')} className="hover:text-gray-300">
-                      Status{sortIndicator('status')}
+                      Status <SortIndicator active={sortColumn === 'status'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-center">
                     <button type="button" onClick={() => toggleSort('payment_date')} className="hover:text-gray-300">
-                      Payment date{sortIndicator('payment_date')}
+                      Payment date <SortIndicator active={sortColumn === 'payment_date'} direction={sortDirection} />
                     </button>
                   </th>
                   <th className="px-4 py-3 text-right">Actions</th>

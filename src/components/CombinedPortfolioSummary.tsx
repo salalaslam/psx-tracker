@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { ArrowRight } from 'lucide-react'
 import type { HoldingWithPrice } from '../db.server'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 
@@ -95,7 +96,9 @@ export function CombinedPortfolioSummary({
           to="/combined-history"
           className="rounded-md bg-gray-800 px-3 py-1.5 text-xs text-gray-300 transition-colors hover:bg-gray-700"
         >
-          View Price History →
+          <span className="inline-flex items-center gap-1">
+            View Price History <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+          </span>
         </Link>
       </div>
       <div className="grid grid-cols-2 gap-6 sm:grid-cols-3 lg:grid-cols-6">

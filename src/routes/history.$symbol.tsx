@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState } from 'react'
+import { ArrowLeft, ExternalLink } from 'lucide-react'
 import { serverGetPriceHistory } from '../serverFns'
 import type { PriceSnapshot } from '../db.server'
 
@@ -130,7 +131,9 @@ function HistoryPage() {
   if (history.length === 0) {
     return (
       <div className="space-y-4">
-        <Link to="/" className="text-sm text-gray-400 hover:text-gray-200">← Back</Link>
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200">
+          <ArrowLeft aria-hidden="true" className="h-4 w-4" /> Back
+        </Link>
         <h1 className="text-2xl font-bold text-white">{symbol} — Price History</h1>
         <p className="text-gray-400">No price snapshots yet. Use "Fetch Latest Prices" on the dashboard.</p>
       </div>
@@ -146,7 +149,9 @@ function HistoryPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-3">
-        <Link to="/" className="text-sm text-gray-400 hover:text-gray-200">← Back</Link>
+        <Link to="/" className="inline-flex items-center gap-1 text-sm text-gray-400 hover:text-gray-200">
+          <ArrowLeft aria-hidden="true" className="h-4 w-4" /> Back
+        </Link>
       </div>
 
       <div className="flex items-start justify-between">
@@ -158,7 +163,9 @@ function HistoryPage() {
             rel="noopener noreferrer"
             className="mt-1 text-xs text-gray-500 hover:text-emerald-400 transition-colors"
           >
-            View on PSX DPS ↗
+            <span className="inline-flex items-center gap-1">
+              View on PSX DPS <ExternalLink aria-hidden="true" className="h-3.5 w-3.5" />
+            </span>
           </a>
         </div>
         <div className="text-right">

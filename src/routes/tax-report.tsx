@@ -1,5 +1,6 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type ReactNode } from 'react'
+import { SortIndicator } from '../components/SortIndicator'
 import { formatPaymentDate } from '../dividends'
 import {
   DIVIDEND_WHT_RATE,
@@ -65,8 +66,7 @@ function TaxReportPage() {
   }
 
   function sortIndicator(col: SortKey) {
-    if (sortColumn !== col) return null
-    return sortDirection === 'asc' ? ' ↑' : ' ↓'
+    return <SortIndicator active={sortColumn === col} direction={sortDirection} />
   }
 
   function handleDownload() {
@@ -283,7 +283,7 @@ function SortHeader({
   label: string
   align?: 'left' | 'right'
   onSort: (col: SortKey) => void
-  indicator: (col: SortKey) => string | null
+  indicator: (col: SortKey) => ReactNode
 }) {
   return (
     <th className={`px-4 py-3 ${align === 'right' ? 'text-right' : ''}`}>

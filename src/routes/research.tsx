@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   ChevronDown,
   Database,
+  Dot,
   ExternalLink,
   Eye,
   Info,
@@ -195,7 +196,7 @@ function ResearchHero({
         <div className="max-w-3xl">
           <div className="mb-3 flex flex-wrap items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em]">
             <span className="text-emerald-400">Owner&apos;s lens</span>
-            <span className="text-gray-700">•</span>
+            <Dot aria-hidden="true" className="h-4 w-4 text-gray-700" />
             <span className="text-gray-500">Pakistan Stock Exchange</span>
           </div>
           <h1 className="text-3xl font-bold tracking-tight text-white sm:text-4xl">

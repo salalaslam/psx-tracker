@@ -1,5 +1,6 @@
 import { createFileRoute, Link, useRouter } from '@tanstack/react-router'
 import { useState } from 'react'
+import { ArrowRight } from 'lucide-react'
 import { AccountSummaryCard } from '../components/AccountSummaryCard'
 import { AllocationDonut, slicesFromAccounts } from '../components/AllocationDonut'
 import { CombinedPortfolioSummary } from '../components/CombinedPortfolioSummary'
@@ -152,7 +153,9 @@ function AccountsPage() {
                   className="flex items-center justify-between py-4 transition-colors hover:text-emerald-400"
                 >
                   <span className="font-medium text-white">{accountLabel(account)}</span>
-                  <span className="text-sm text-gray-500">View portfolio →</span>
+                  <span className="inline-flex items-center gap-1 text-sm text-gray-500">
+                    View portfolio <ArrowRight aria-hidden="true" className="h-4 w-4" />
+                  </span>
                 </Link>
               </li>
             ))}

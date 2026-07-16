@@ -13,6 +13,7 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import { Line } from 'react-chartjs-2'
 import { serverEnsureSectors, serverFetchAndStorePrices, serverGetAllDividendTotals, serverGetHoldings, serverGetHoldingsMarketMetrics, serverGetLatestPrices, serverGetPortfolioHistory, serverGetAllAccounts, type FetchResult } from '../serverFns'
+import { SortIndicator } from '../components/SortIndicator'
 import type { HoldingMarketMetrics } from '../valueResearch'
 import type { HoldingWithPrice, PortfolioValuePoint } from '../db.server'
 import { AllocationDonut } from '../components/AllocationDonut'
@@ -196,7 +197,7 @@ function PortfolioChart({ data }: { data: PortfolioValuePoint[] }) {
         currentChangePct,
         isUp,
         isCurrentUp,
-        periodLabel: data.length >= 2 ? `${fmtDate(data[0].sess)} → today` : '',
+        periodLabel: data.length >= 2 ? `${fmtDate(data[0].sess)} to today` : '',
       },
       chart: {
         labels: data.map(d => d.sess),
@@ -547,7 +548,7 @@ function TopMovers({
                   <span className={`inline-flex items-center gap-1 ${align === 'right' ? 'justify-end w-full' : ''}`}>
                     {label}
                     <span className="text-gray-600">
-                      {sortCol === sortable ? (sortDir === 'desc' ? ' ↓' : ' ↑') : ' ↕'}
+                      <SortIndicator active={sortCol === sortable} direction={sortDir} />
                     </span>
                   </span>
                 </th>

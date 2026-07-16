@@ -1,4 +1,5 @@
 import { Link } from '@tanstack/react-router'
+import { ArrowRight } from 'lucide-react'
 import type { HoldingWithPrice } from '../db.server'
 import { calcDividendYieldOnCost, dividendPerShare } from '../dividends'
 
@@ -77,7 +78,9 @@ export function AccountSummaryCard({
           params={{ name: account }}
           className="rounded-md bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
         >
-          View Details →
+          <span className="inline-flex items-center gap-1">
+            View Details <ArrowRight aria-hidden="true" className="h-3.5 w-3.5" />
+          </span>
         </Link>
       </div>
       <div className="grid grid-cols-2 gap-4">

@@ -3,6 +3,8 @@ import { useRouter } from '@tanstack/react-router'
 import type { CorporateEvent, HoldingWithPrice } from '../db.server'
 import { calcSplitAdjustment, formatSplitRatio } from '../corporateEvents'
 import { serverAddCorporateEvent, serverDeleteCorporateEvent } from '../serverFns'
+import { ArrowRight } from 'lucide-react'
+import { SortIndicator } from './SortIndicator'
 
 function fmt(n: number) {
   return n.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
@@ -62,11 +64,6 @@ export function AccountCorporateEvents({
       setSortColumn(col)
       setSortDirection('asc')
     }
-  }
-
-  function sortIndicator(col: SortKey) {
-    if (sortColumn !== col) return ' ↕'
-    return sortDirection === 'asc' ? ' ↑' : ' ↓'
   }
 
   const sorted = [...events].sort((a, b) => {
@@ -232,7 +229,7 @@ export function AccountCorporateEvents({
                 <input
                   value={notes}
                   onChange={e => setNotes(e.target.value)}
-                  placeholder="e.g. MTL sub-division Rs10 → Rs5, record date 19-Jun-2026"
+                  placeholder="e.g. MTL sub-division Rs10 to Rs5, record date 19-Jun-2026"
                   className="w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm"
                   disabled={saving}
                 />
@@ -242,8 +239,8 @@ export function AccountCorporateEvents({
             {preview && (
               <div className="rounded-lg border border-gray-700 bg-gray-800/60 px-4 py-3 text-sm text-gray-300">
                 <span className="text-gray-500">Preview: </span>
-                {preview.sharesBefore.toLocaleString()} → {preview.sharesAfter.toLocaleString()}{' '}
-                shares · ₨ {fmt(preview.costAvgBefore)} → ₨ {fmt(preview.costAvgAfter)} avg cost ·
+                {preview.sharesBefore.toLocaleString()} <ArrowRight aria-hidden="true" className="inline h-3.5 w-3.5" /> {preview.sharesAfter.toLocaleString()}{' '}
+                shares · ₨ {fmt(preview.costAvgBefore)} <ArrowRight aria-hidden="true" className="inline h-3.5 w-3.5" /> ₨ {fmt(preview.costAvgAfter)} avg cost ·
                 invested unchanged at ₨ {fmt(preview.totalInvested)}
               </div>
             )}
@@ -271,16 +268,16 @@ export function AccountCorporateEvents({
             <thead>
               <tr className="border-b border-gray-800 text-left text-xs uppercase tracking-wide text-gray-500">
                 <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort('effective_date')}>
-                  Date{sortIndicator('effective_date')}
+                  Date <SortIndicator active={sortColumn === 'effective_date'} direction={sortDirection} />
                 </th>
                 <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort('symbol')}>
-                  Symbol{sortIndicator('symbol')}
+                  Symbol <SortIndicator active={sortColumn === 'symbol'} direction={sortDirection} />
                 </th>
                 <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort('ratio')}>
-                  Ratio{sortIndicator('ratio')}
+                  Ratio <SortIndicator active={sortColumn === 'ratio'} direction={sortDirection} />
                 </th>
                 <th className="cursor-pointer px-4 py-3" onClick={() => toggleSort('shares_before')}>
-                  Shares{sortIndicator('shares_before')}
+                  Shares <SortIndicator active={sortColumn === 'shares_before'} direction={sortDirection} />
                 </th>
                 <th className="px-4 py-3">Avg cost</th>
                 <th className="px-4 py-3">Notes</th>
@@ -296,10 +293,10 @@ export function AccountCorporateEvents({
                     {formatSplitRatio(ev.ratio_from, ev.ratio_to)}
                   </td>
                   <td className="px-4 py-3 text-gray-300">
-                    {ev.shares_before.toLocaleString()} → {ev.shares_after.toLocaleString()}
+                    {ev.shares_before.toLocaleString()} <ArrowRight aria-hidden="true" className="inline h-3.5 w-3.5" /> {ev.shares_after.toLocaleString()}
                   </td>
                   <td className="px-4 py-3 text-gray-300">
-                    ₨ {fmt(ev.cost_avg_before)} → ₨ {fmt(ev.cost_avg_after)}
+                    ₨ {fmt(ev.cost_avg_before)} <ArrowRight aria-hidden="true" className="inline h-3.5 w-3.5" /> ₨ {fmt(ev.cost_avg_after)}
                   </td>
                   <td className="max-w-xs truncate px-4 py-3 text-gray-500" title={ev.notes ?? ''}>
                     {ev.notes ?? '—'}
