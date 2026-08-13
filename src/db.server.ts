@@ -6,6 +6,12 @@ import { isAccountChargeCategory } from './accountCharges'
 import { resolveTradeFees } from './fees'
 import type { ParsedDividendRow } from './dividends'
 import { calcSplitAdjustment } from './corporateEvents'
+import type {
+  LedgerEvent,
+  LedgerPosition,
+  LedgerReplayResult,
+} from './ledger'
+import { replayLedger } from './ledger'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DB_PATH = path.resolve(__dirname, '../../data/investments.db')
@@ -56,6 +62,8 @@ db.exec(`
     commission      REAL,
     sales_tax       REAL,
     cdc_charges     REAL,
+    shares_after    INTEGER,
+    total_invested_after REAL,
     traded_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     FOREIGN KEY(account) REFERENCES accounts(name)
   );
@@ -141,6 +149,88 @@ function migrateTransactionsFeeColumns(): void {
   if (!cols.has('cdc_charges')) db.exec('ALTER TABLE transactions ADD COLUMN cdc_charges REAL')
 }
 
+function getLedgerEvents(account: string, symbol?: string): LedgerEvent[] {
+  const symbolClause = symbol == null ? '' : ' AND symbol = ?'
+  const params = symbol == null ? [account] : [account, symbol]
+  const transactions = db.prepare(`
+    SELECT id, symbol, side, shares, cost_per_share, traded_at
+    FROM transactions
+    WHERE account = ?${symbolClause}
+  `).all(...params) as Array<{
+    id: number
+    symbol: string
+    side: 'buy' | 'sell'
+    shares: number
+    cost_per_share: number
+    traded_at: string
+  }>
+  const splits = db.prepare(`
+    SELECT id, symbol, effective_date, ratio_from, ratio_to
+    FROM corporate_events
+    WHERE account = ? AND event_type = 'split'${symbolClause}
+  `).all(...params) as Array<{
+    id: number
+    symbol: string
+    effective_date: string
+    ratio_from: number
+    ratio_to: number
+  }>
+
+  return [
+    ...transactions.map(row => ({ kind: 'transaction' as const, ...row })),
+    ...splits.map(row => ({ kind: 'split' as const, ...row })),
+  ]
+}
+
+function replayAccountLedger(account: string, symbol?: string): LedgerReplayResult {
+  return replayLedger(getLedgerEvents(account, symbol))
+}
+
+function updateTransactionBalances(
+  account: string,
+  symbol?: string,
+): LedgerReplayResult {
+  const replay = replayAccountLedger(account, symbol)
+  const update = db.prepare(`
+    UPDATE transactions
+    SET shares_after = ?, total_invested_after = ?
+    WHERE id = ?
+  `)
+  for (const [id, balance] of replay.transactionBalances) {
+    update.run(balance.shares_after, balance.total_invested_after, id)
+  }
+  return replay
+}
+
+function migrateTransactionsLedgerColumns(): void {
+  const cols = new Set(
+    (db.prepare('PRAGMA table_info(transactions)').all() as { name: string }[]).map(c => c.name),
+  )
+  let added = false
+  if (!cols.has('shares_after')) {
+    db.exec('ALTER TABLE transactions ADD COLUMN shares_after INTEGER')
+    added = true
+  }
+  if (!cols.has('total_invested_after')) {
+    db.exec('ALTER TABLE transactions ADD COLUMN total_invested_after REAL')
+    added = true
+  }
+
+  const hasNullBalance = !!db.prepare(`
+    SELECT 1 FROM transactions
+    WHERE shares_after IS NULL OR total_invested_after IS NULL
+    LIMIT 1
+  `).get()
+  if (!added && !hasNullBalance) return
+
+  const accounts = db.prepare(
+    'SELECT DISTINCT account FROM transactions ORDER BY account',
+  ).all() as { account: string }[]
+  db.transaction(() => {
+    for (const { account } of accounts) updateTransactionBalances(account)
+  })()
+}
+
 function migrateDividendsSharesColumn(): void {
   const cols = new Set(
     (db.prepare('PRAGMA table_info(dividends)').all() as { name: string }[]).map(c => c.name),
@@ -150,6 +240,7 @@ function migrateDividendsSharesColumn(): void {
 
 migrateTransactionsFeeColumns()
 migrateDividendsSharesColumn()
+migrateTransactionsLedgerColumns()
 
 // ── Seed data (public-safe demo values) ─────────────────────────────────────
 
@@ -612,6 +703,8 @@ export interface Transaction {
   commission: number | null
   sales_tax: number | null
   cdc_charges: number | null
+  shares_after: number | null
+  total_invested_after: number | null
   traded_at: string
 }
 
@@ -631,6 +724,18 @@ export interface AddTradeInput {
 export interface AddTradeResult {
   ok: boolean
   error?: string
+}
+
+export interface LedgerMismatch {
+  kind: 'row' | 'holding'
+  account: string
+  symbol: string
+  detail: string
+}
+
+export interface LedgerVerificationResult {
+  ok: boolean
+  mismatches: LedgerMismatch[]
 }
 
 export interface PurchaseImportRow {
@@ -697,22 +802,37 @@ function applySellToHolding(account: string, symbol: string, shares: number): vo
   ).run(nextShares, nextInvested, existing.id)
 }
 
-export function rebuildHoldingsFromTransactions(account: string): void {
-  db.prepare('DELETE FROM holdings WHERE account = ?').run(account)
-  const txs = db.prepare(`
-    SELECT symbol, side, shares, cost_per_share
-    FROM transactions
-    WHERE account = ?
-    ORDER BY traded_at ASC, id ASC
-  `).all(account) as { symbol: string; side: TradeSide; shares: number; cost_per_share: number }[]
-
-  for (const row of txs) {
-    if (row.side === 'buy') {
-      applyBuyToHolding(account, row.symbol, row.shares, row.cost_per_share)
-    } else {
-      applySellToHolding(account, row.symbol, row.shares)
-    }
+function storeReplayPosition(
+  account: string,
+  symbol: string,
+  position: LedgerPosition | undefined,
+): void {
+  if (!position || position.shares === 0) {
+    db.prepare('DELETE FROM holdings WHERE account = ? AND symbol = ?')
+      .run(account, symbol)
+    return
   }
+
+  const costAvg = position.total_invested / position.shares
+  db.prepare(`
+    INSERT INTO holdings (account, symbol, shares, cost_avg, total_invested)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(account, symbol) DO UPDATE SET
+      shares = excluded.shares,
+      cost_avg = excluded.cost_avg,
+      total_invested = excluded.total_invested
+  `).run(account, symbol, position.shares, costAvg, position.total_invested)
+}
+
+export function rebuildHoldingsFromTransactions(account: string): void {
+  const acct = account.trim().toLowerCase()
+  db.transaction(() => {
+    const replay = updateTransactionBalances(acct)
+    db.prepare('DELETE FROM holdings WHERE account = ?').run(acct)
+    for (const [symbol, position] of replay.positions) {
+      storeReplayPosition(acct, symbol, position)
+    }
+  })()
 }
 
 export function importPurchaseHistory(
@@ -769,12 +889,152 @@ export function importPurchaseHistory(
 export function getTransactions(account: string, limit = 500): Transaction[] {
   return db.prepare(`
     SELECT id, account, symbol, side, shares, cost_per_share,
-           rate_slip, commission, sales_tax, cdc_charges, traded_at
+           rate_slip, commission, sales_tax, cdc_charges,
+           shares_after, total_invested_after, traded_at
     FROM transactions
     WHERE account = ?
     ORDER BY traded_at DESC, id DESC
     LIMIT ?
   `).all(account, limit) as Transaction[]
+}
+
+function realMatches(actual: number, expected: number): boolean {
+  return Number.isFinite(actual) && Math.abs(actual - expected) <= 0.01
+}
+
+export function verifyLedger(): LedgerVerificationResult {
+  const mismatches: LedgerMismatch[] = []
+  const accounts = db.prepare(
+    'SELECT DISTINCT account FROM transactions ORDER BY account',
+  ).all() as { account: string }[]
+
+  for (const { account } of accounts) {
+    const transactionRows = db.prepare(`
+      SELECT id, symbol, shares_after, total_invested_after
+      FROM transactions
+      WHERE account = ?
+      ORDER BY symbol, traded_at, id
+    `).all(account) as Array<{
+      id: number
+      symbol: string
+      shares_after: number | null
+      total_invested_after: number | null
+    }>
+    const symbols = [...new Set(transactionRows.map(row => row.symbol))]
+    const finalPositions = new Map<string, LedgerPosition>()
+    const failedSymbols = new Set<string>()
+
+    for (const symbol of symbols) {
+      let replay: LedgerReplayResult
+      try {
+        replay = replayAccountLedger(account, symbol)
+      } catch (e) {
+        failedSymbols.add(symbol)
+        mismatches.push({
+          kind: 'row',
+          account,
+          symbol,
+          detail: `Replay failed: ${e instanceof Error ? e.message : String(e)}`,
+        })
+        continue
+      }
+
+      const position = replay.positions.get(symbol)
+      if (position) finalPositions.set(symbol, position)
+
+      for (const row of transactionRows.filter(item => item.symbol === symbol)) {
+        const expected = replay.transactionBalances.get(row.id)
+        if (!expected) {
+          mismatches.push({
+            kind: 'row',
+            account,
+            symbol,
+            detail: `Transaction ${row.id} has no replayed balance`,
+          })
+          continue
+        }
+        if (
+          row.shares_after !== expected.shares_after
+          || row.total_invested_after == null
+          || !realMatches(
+            row.total_invested_after,
+            expected.total_invested_after,
+          )
+        ) {
+          mismatches.push({
+            kind: 'row',
+            account,
+            symbol,
+            detail:
+              `Transaction ${row.id}: stored balance `
+              + `${row.shares_after ?? 'NULL'} shares / `
+              + `${row.total_invested_after ?? 'NULL'} invested; expected `
+              + `${expected.shares_after} shares / `
+              + `${expected.total_invested_after} invested`,
+          })
+        }
+      }
+    }
+
+    const holdings = db.prepare(`
+      SELECT symbol, shares, cost_avg, total_invested
+      FROM holdings
+      WHERE account = ?
+    `).all(account) as Array<Pick<
+      Holding,
+      'symbol' | 'shares' | 'cost_avg' | 'total_invested'
+    >>
+    const holdingsBySymbol = new Map(holdings.map(row => [row.symbol, row]))
+    const holdingSymbols = new Set([
+      ...finalPositions.keys(),
+      ...holdingsBySymbol.keys(),
+    ])
+
+    for (const symbol of holdingSymbols) {
+      if (failedSymbols.has(symbol)) continue
+      const expected = finalPositions.get(symbol)
+      const actual = holdingsBySymbol.get(symbol)
+      if (!expected && actual) {
+        mismatches.push({
+          kind: 'holding',
+          account,
+          symbol,
+          detail: `Unexpected holding row with ${actual.shares} shares`,
+        })
+        continue
+      }
+      if (expected && !actual) {
+        mismatches.push({
+          kind: 'holding',
+          account,
+          symbol,
+          detail: `Missing holding row; replay ends with ${expected.shares} shares`,
+        })
+        continue
+      }
+      if (!expected || !actual) continue
+
+      const expectedCostAvg = expected.total_invested / expected.shares
+      if (
+        actual.shares !== expected.shares
+        || !realMatches(actual.total_invested, expected.total_invested)
+        || !realMatches(actual.cost_avg, expectedCostAvg)
+      ) {
+        mismatches.push({
+          kind: 'holding',
+          account,
+          symbol,
+          detail:
+            `Stored holding is ${actual.shares} shares / `
+            + `${actual.cost_avg} average / ${actual.total_invested} invested; `
+            + `expected ${expected.shares} shares / ${expectedCostAvg} average / `
+            + `${expected.total_invested} invested`,
+        })
+      }
+    }
+  }
+
+  return { ok: mismatches.length === 0, mismatches }
 }
 
 export function addTrade(input: AddTradeInput): AddTradeResult {
@@ -830,11 +1090,12 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
       input.traded_at?.trim() ||
       new Date().toISOString().replace(/\.\d{3}Z$/, 'Z')
 
-    db.prepare(
+    const insertResult = db.prepare(
       `INSERT INTO transactions (
          account, symbol, side, shares, cost_per_share,
-         rate_slip, commission, sales_tax, cdc_charges, traded_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         rate_slip, commission, sales_tax, cdc_charges,
+         shares_after, total_invested_after, traded_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`
     ).run(
       account,
       symbol,
@@ -847,6 +1108,43 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
       fees.cdc_charges,
       tradedAt,
     )
+    const transactionId = Number(insertResult.lastInsertRowid)
+
+    const hasLaterTransaction = !!db.prepare(`
+      SELECT 1 FROM transactions
+      WHERE account = ? AND symbol = ?
+        AND (traded_at > ? OR (traded_at = ? AND id > ?))
+      LIMIT 1
+    `).get(account, symbol, tradedAt, tradedAt, transactionId)
+    // A same-date split follows every transaction on that date, so it also
+    // makes this trade non-terminal in the interleaved replay.
+    const hasLaterSplit = !!db.prepare(`
+      SELECT 1 FROM corporate_events
+      WHERE account = ? AND symbol = ? AND event_type = 'split'
+        AND effective_date >= ?
+      LIMIT 1
+    `).get(account, symbol, tradedAt.slice(0, 10))
+
+    if (hasLaterTransaction || hasLaterSplit) {
+      const replay = updateTransactionBalances(account, symbol)
+      storeReplayPosition(account, symbol, replay.positions.get(symbol))
+      if (side === 'buy') {
+        db.prepare('DELETE FROM interested_symbols WHERE symbol = ?').run(symbol)
+      }
+      return { ok: true }
+    }
+
+    const nextShares = side === 'buy'
+      ? (existing?.shares ?? 0) + shares
+      : existing!.shares - shares
+    const nextInvested = side === 'buy'
+      ? (existing?.total_invested ?? 0) + shares * costPerShare
+      : nextShares === 0 ? 0 : existing!.cost_avg * nextShares
+    db.prepare(`
+      UPDATE transactions
+      SET shares_after = ?, total_invested_after = ?
+      WHERE id = ?
+    `).run(nextShares, nextInvested, transactionId)
 
     if (side === 'buy') {
       applyBuyToHolding(account, symbol, shares, costPerShare)
@@ -854,23 +1152,18 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
       return { ok: true }
     }
 
-    const nextShares = existing.shares - shares
-    if (nextShares === 0) {
-      db.prepare('DELETE FROM holdings WHERE id = ?').run(existing.id)
-      return { ok: true }
-    }
-
-    const nextInvested = existing.cost_avg * nextShares
-    db.prepare(
-      `UPDATE holdings
-       SET shares = ?, total_invested = ?
-       WHERE id = ?`
-    ).run(nextShares, nextInvested, existing.id)
-
+    applySellToHolding(account, symbol, shares)
     return { ok: true }
   })
 
-  return tx()
+  try {
+    return tx()
+  } catch (e) {
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : 'Could not record trade',
+    }
+  }
 }
 
 // ── Dividends ───────────────────────────────────────────────────────────────
@@ -1327,6 +1620,8 @@ export function addCorporateEvent(
       holding.id,
     )
 
+    updateTransactionBalances(account, symbol)
+
     return Number(result.lastInsertRowid)
   })
 
@@ -1380,6 +1675,7 @@ export function deleteCorporateEvent(
       `UPDATE holdings SET shares = ?, cost_avg = ?, total_invested = ? WHERE id = ?`,
     ).run(event.shares_before, event.cost_avg_before, totalInvested, holding.id)
     db.prepare('DELETE FROM corporate_events WHERE id = ? AND account = ?').run(id, acct)
+    updateTransactionBalances(acct, event.symbol)
   })
 
   try {
@@ -1592,6 +1888,17 @@ export function getPortfolioValueHistory(): PortfolioValuePoint[] {
 
     return { sess: `${d}T12:00`, portfolio_value, current_assets_value }
   })
+}
+
+const startupLedgerVerification = verifyLedger()
+if (!startupLedgerVerification.ok) {
+  console.error([
+    '!!! LEDGER VERIFICATION FAILED !!!',
+    ...startupLedgerVerification.mismatches.map(
+      mismatch =>
+        `[${mismatch.kind}] ${mismatch.account}/${mismatch.symbol}: ${mismatch.detail}`,
+    ),
+  ].join('\n'))
 }
 
 export default db
