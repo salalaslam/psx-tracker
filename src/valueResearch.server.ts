@@ -64,8 +64,8 @@ function toFundamentalInput(result: PsxCompanyFundamentalsResult): ResearchFunda
   }
 }
 
-export async function getHoldingsMarketMetrics(): Promise<Record<string, HoldingMarketMetrics>> {
-  const symbols = getAllSymbols()
+export async function getHoldingsMarketMetrics(userId: number): Promise<Record<string, HoldingMarketMetrics>> {
+  const symbols = getAllSymbols(userId)
 
   if (symbols.length === 0) return {}
 
@@ -94,9 +94,9 @@ export async function getHoldingsMarketMetrics(): Promise<Record<string, Holding
   )
 }
 
-export async function getValueResearchReport(): Promise<ValueResearchReport> {
-  const accounts = getAllAccounts()
-  const holdings = accounts.flatMap(account => getHoldings(account))
+export async function getValueResearchReport(userId: number): Promise<ValueResearchReport> {
+  const accounts = getAllAccounts(userId)
+  const holdings = accounts.flatMap(account => getHoldings(userId, account))
   const holdingInputs: ResearchHoldingInput[] = holdings.map(holding => ({
     account: holding.account,
     symbol: holding.symbol,
@@ -117,7 +117,7 @@ export async function getValueResearchReport(): Promise<ValueResearchReport> {
     companyResults.map(result => [result.symbol, toFundamentalInput(result)]),
   )
 
-  const dividendTotals = getAllDividendTotals()
+  const dividendTotals = getAllDividendTotals(userId)
   const dividendsBySymbol = Object.fromEntries(
     Object.entries(dividendTotals.by_symbol).map(([symbol, totals]) => [
       symbol,

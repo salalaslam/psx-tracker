@@ -55,10 +55,6 @@ function fmtDate(value: string): string {
   })
 }
 
-function accountLabel(account: string): string {
-  return account.charAt(0).toUpperCase() + account.slice(1)
-}
-
 type ChartTimeRange = '1d' | '1w' | '15d' | '30d' | '3m' | '6m' | '1y' | 'all'
 
 const TIME_RANGE_OPTIONS: { value: ChartTimeRange; label: string }[] = [

@@ -150,6 +150,7 @@ function AccountsPage() {
                 <Link
                   to="/account/$name"
                   params={{ name: account }}
+                  search={{ tab: 'portfolio' }}
                   className="flex items-center justify-between py-4 transition-colors hover:text-emerald-400"
                 >
                   <span className="font-medium text-white">{accountLabel(account)}</span>

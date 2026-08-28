@@ -12,150 +12,36 @@ import type {
   LedgerReplayResult,
 } from './ledger'
 import { replayLedger } from './ledger'
+import { migrateDatabase } from './dbMigration.server'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
-const DB_PATH = path.resolve(__dirname, '../../data/investments.db')
+const DB_PATH = process.env.PSX_TRACKER_DB_PATH
+  ? path.resolve(process.env.PSX_TRACKER_DB_PATH)
+  : path.resolve(__dirname, '../../data/investments.db')
 
 mkdirSync(path.dirname(DB_PATH), { recursive: true })
 
 const db = new Database(DB_PATH)
 db.pragma('journal_mode = WAL')
+migrateDatabase(db)
 db.pragma('foreign_keys = ON')
 
 // ── Schema ──────────────────────────────────────────────────────────────────
-
-db.exec(`
-  CREATE TABLE IF NOT EXISTS accounts (
-    id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    name  TEXT    NOT NULL UNIQUE
-  );
-
-  CREATE TABLE IF NOT EXISTS holdings (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    account       TEXT    NOT NULL,
-    symbol        TEXT    NOT NULL,
-    shares        INTEGER NOT NULL,
-    cost_avg      REAL    NOT NULL,
-    total_invested REAL   NOT NULL,
-    UNIQUE(account, symbol),
-    FOREIGN KEY(account) REFERENCES accounts(name)
-  );
-
-  CREATE TABLE IF NOT EXISTS price_snapshots (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    symbol     TEXT    NOT NULL,
-    price      REAL    NOT NULL,
-    fetched_at TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_snapshots_symbol_time
-    ON price_snapshots(symbol, fetched_at DESC);
-
-  CREATE TABLE IF NOT EXISTS transactions (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    account         TEXT    NOT NULL,
-    symbol          TEXT    NOT NULL,
-    side            TEXT    NOT NULL CHECK (side IN ('buy', 'sell')),
-    shares          INTEGER NOT NULL,
-    cost_per_share  REAL    NOT NULL,
-    rate_slip       REAL,
-    commission      REAL,
-    sales_tax       REAL,
-    cdc_charges     REAL,
-    shares_after    INTEGER,
-    total_invested_after REAL,
-    traded_at       TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    FOREIGN KEY(account) REFERENCES accounts(name)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_transactions_account_time
-    ON transactions(account, traded_at DESC);
-
-  CREATE TABLE IF NOT EXISTS stocks (
-    symbol  TEXT PRIMARY KEY,
-    sector  TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS interested_symbols (
-    symbol      TEXT PRIMARY KEY,
-    fair_value  REAL NOT NULL CHECK (fair_value > 0),
-    notes       TEXT,
-    created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
-    updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
-  );
-
-  CREATE TABLE IF NOT EXISTS dividends (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    account         TEXT    NOT NULL,
-    event_id        TEXT    NOT NULL,
-    symbol          TEXT    NOT NULL,
-    security_name   TEXT,
-    financial_year  TEXT    NOT NULL,
-    gross_amount    REAL    NOT NULL,
-    net_amount      REAL    NOT NULL,
-    status          TEXT    NOT NULL DEFAULT 'paid',
-    payment_date    TEXT    NOT NULL,
-    shares          INTEGER,
-    FOREIGN KEY(account) REFERENCES accounts(name),
-    UNIQUE(account, event_id)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_dividends_account_date
-    ON dividends(account, payment_date DESC);
-
-  CREATE TABLE IF NOT EXISTS account_charges (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    account     TEXT    NOT NULL,
-    category    TEXT    NOT NULL,
-    label       TEXT    NOT NULL,
-    amount      REAL    NOT NULL,
-    charged_at  TEXT    NOT NULL,
-    voucher_no  TEXT,
-    notes       TEXT,
-    FOREIGN KEY(account) REFERENCES accounts(name),
-    UNIQUE(account, voucher_no)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_account_charges_account_date
-    ON account_charges(account, charged_at DESC);
-
-  CREATE TABLE IF NOT EXISTS corporate_events (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    account         TEXT    NOT NULL,
-    symbol          TEXT    NOT NULL,
-    event_type      TEXT    NOT NULL CHECK (event_type IN ('split')),
-    effective_date  TEXT    NOT NULL,
-    ratio_from      INTEGER NOT NULL,
-    ratio_to        INTEGER NOT NULL,
-    shares_before   INTEGER NOT NULL,
-    shares_after    INTEGER NOT NULL,
-    cost_avg_before REAL    NOT NULL,
-    cost_avg_after  REAL    NOT NULL,
-    notes           TEXT,
-    FOREIGN KEY(account) REFERENCES accounts(name)
-  );
-
-  CREATE INDEX IF NOT EXISTS idx_corporate_events_account_date
-    ON corporate_events(account, effective_date DESC);
-`)
-
-function migrateTransactionsFeeColumns(): void {
-  const cols = new Set(
-    (db.prepare('PRAGMA table_info(transactions)').all() as { name: string }[]).map(c => c.name),
-  )
-  if (!cols.has('rate_slip')) db.exec('ALTER TABLE transactions ADD COLUMN rate_slip REAL')
-  if (!cols.has('commission')) db.exec('ALTER TABLE transactions ADD COLUMN commission REAL')
-  if (!cols.has('sales_tax')) db.exec('ALTER TABLE transactions ADD COLUMN sales_tax REAL')
-  if (!cols.has('cdc_charges')) db.exec('ALTER TABLE transactions ADD COLUMN cdc_charges REAL')
+export function resolveAccountId(userId: number, name: string): number {
+  const account = db.prepare(`
+    SELECT id FROM accounts WHERE user_id = ? AND name = ?
+  `).get(userId, name.trim().toLowerCase()) as { id: number } | undefined
+  if (!account) throw new Error('Account not found')
+  return account.id
 }
 
-function getLedgerEvents(account: string, symbol?: string): LedgerEvent[] {
+function getLedgerEvents(accountId: number, symbol?: string): LedgerEvent[] {
   const symbolClause = symbol == null ? '' : ' AND symbol = ?'
-  const params = symbol == null ? [account] : [account, symbol]
+  const params = symbol == null ? [accountId] : [accountId, symbol]
   const transactions = db.prepare(`
     SELECT id, symbol, side, shares, cost_per_share, traded_at
     FROM transactions
-    WHERE account = ?${symbolClause}
+    WHERE account_id = ?${symbolClause}
   `).all(...params) as Array<{
     id: number
     symbol: string
@@ -167,7 +53,7 @@ function getLedgerEvents(account: string, symbol?: string): LedgerEvent[] {
   const splits = db.prepare(`
     SELECT id, symbol, effective_date, ratio_from, ratio_to
     FROM corporate_events
-    WHERE account = ? AND event_type = 'split'${symbolClause}
+    WHERE account_id = ? AND event_type = 'split'${symbolClause}
   `).all(...params) as Array<{
     id: number
     symbol: string
@@ -182,15 +68,15 @@ function getLedgerEvents(account: string, symbol?: string): LedgerEvent[] {
   ]
 }
 
-function replayAccountLedger(account: string, symbol?: string): LedgerReplayResult {
-  return replayLedger(getLedgerEvents(account, symbol))
+function replayAccountLedger(accountId: number, symbol?: string): LedgerReplayResult {
+  return replayLedger(getLedgerEvents(accountId, symbol))
 }
 
 function updateTransactionBalances(
-  account: string,
+  accountId: number,
   symbol?: string,
 ): LedgerReplayResult {
-  const replay = replayAccountLedger(account, symbol)
+  const replay = replayAccountLedger(accountId, symbol)
   const update = db.prepare(`
     UPDATE transactions
     SET shares_after = ?, total_invested_after = ?
@@ -202,46 +88,6 @@ function updateTransactionBalances(
   return replay
 }
 
-function migrateTransactionsLedgerColumns(): void {
-  const cols = new Set(
-    (db.prepare('PRAGMA table_info(transactions)').all() as { name: string }[]).map(c => c.name),
-  )
-  let added = false
-  if (!cols.has('shares_after')) {
-    db.exec('ALTER TABLE transactions ADD COLUMN shares_after INTEGER')
-    added = true
-  }
-  if (!cols.has('total_invested_after')) {
-    db.exec('ALTER TABLE transactions ADD COLUMN total_invested_after REAL')
-    added = true
-  }
-
-  const hasNullBalance = !!db.prepare(`
-    SELECT 1 FROM transactions
-    WHERE shares_after IS NULL OR total_invested_after IS NULL
-    LIMIT 1
-  `).get()
-  if (!added && !hasNullBalance) return
-
-  const accounts = db.prepare(
-    'SELECT DISTINCT account FROM transactions ORDER BY account',
-  ).all() as { account: string }[]
-  db.transaction(() => {
-    for (const { account } of accounts) updateTransactionBalances(account)
-  })()
-}
-
-function migrateDividendsSharesColumn(): void {
-  const cols = new Set(
-    (db.prepare('PRAGMA table_info(dividends)').all() as { name: string }[]).map(c => c.name),
-  )
-  if (!cols.has('shares')) db.exec('ALTER TABLE dividends ADD COLUMN shares INTEGER')
-}
-
-migrateTransactionsFeeColumns()
-migrateDividendsSharesColumn()
-migrateTransactionsLedgerColumns()
-
 // ── Seed data (public-safe demo values) ─────────────────────────────────────
 
 const SEED: Array<{ symbol: string; sector: string; demoA: number; demoB: number; costAvg: number }> = [
@@ -251,20 +97,28 @@ const SEED: Array<{ symbol: string; sector: string; demoA: number; demoB: number
   { symbol: 'EFERT', sector: 'FERTILIZER', demoA: 0, demoB: 160, costAvg: 12.75 },
 ]
 
+const localUser = db.prepare(`
+  INSERT INTO users (external_id, display_name) VALUES ('local', 'Local User')
+  ON CONFLICT(external_id) DO UPDATE SET external_id = excluded.external_id
+  RETURNING id
+`).get() as { id: number }
+const localUserId = localUser.id
 const insert = db.prepare(
-  `INSERT OR IGNORE INTO holdings (account, symbol, shares, cost_avg, total_invested)
+  `INSERT OR IGNORE INTO holdings (account_id, symbol, shares, cost_avg, total_invested)
    VALUES (?, ?, ?, ?, ?)`
 )
 const insertAccount = db.prepare(
-  `INSERT OR IGNORE INTO accounts (name) VALUES (?)`
+  `INSERT OR IGNORE INTO accounts (user_id, name) VALUES (?, ?)`
 )
 const insertStock = db.prepare(
   `INSERT OR IGNORE INTO stocks (symbol, sector) VALUES (?, ?)`
 )
 const insertAll = db.transaction(() => {
   // Insert accounts first
-  insertAccount.run('demo-a')
-  insertAccount.run('demo-b')
+  insertAccount.run(localUserId, 'demo-a')
+  insertAccount.run(localUserId, 'demo-b')
+  const demoAId = resolveAccountId(localUserId, 'demo-a')
+  const demoBId = resolveAccountId(localUserId, 'demo-b')
 
   for (const row of SEED) {
     insertStock.run(row.symbol, row.sector)
@@ -273,10 +127,10 @@ const insertAll = db.transaction(() => {
   // Insert holdings
   for (const row of SEED) {
     if (row.demoA > 0) {
-      insert.run('demo-a', row.symbol, row.demoA, row.costAvg, row.costAvg * row.demoA)
+      insert.run(demoAId, row.symbol, row.demoA, row.costAvg, row.costAvg * row.demoA)
     }
     if (row.demoB > 0) {
-      insert.run('demo-b', row.symbol, row.demoB, row.costAvg, row.costAvg * row.demoB)
+      insert.run(demoBId, row.symbol, row.demoB, row.costAvg, row.costAvg * row.demoB)
     }
   }
 })
@@ -358,10 +212,10 @@ export interface GainPosition {
   dividend_count: number
 }
 
-export function getGainPositions(): GainPosition[] {
+export function getGainPositions(userId: number): GainPosition[] {
   return db.prepare(`
     SELECT
-      h.account,
+      a.name AS account,
       h.symbol,
       st.sector,
       h.shares,
@@ -373,6 +227,7 @@ export function getGainPositions(): GainPosition[] {
       COALESCE(dividend_totals.dividend_net, 0) AS dividend_net,
       COALESCE(dividend_totals.dividend_count, 0) AS dividend_count
     FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
     INNER JOIN price_snapshots latest
       ON latest.symbol = h.symbol
       AND latest.fetched_at = (
@@ -380,23 +235,23 @@ export function getGainPositions(): GainPosition[] {
       )
     LEFT JOIN stocks st ON st.symbol = h.symbol
     LEFT JOIN (
-      SELECT account, symbol, MIN(traded_at) AS first_invested_at
+      SELECT account_id, symbol, MIN(traded_at) AS first_invested_at
       FROM transactions
       WHERE side = 'buy'
-      GROUP BY account, symbol
+      GROUP BY account_id, symbol
     ) first_buy
-      ON first_buy.account = h.account AND first_buy.symbol = h.symbol
+      ON first_buy.account_id = h.account_id AND first_buy.symbol = h.symbol
     LEFT JOIN (
-      SELECT account, symbol, SUM(net_amount) AS dividend_net, COUNT(1) AS dividend_count
+      SELECT account_id, symbol, SUM(net_amount) AS dividend_net, COUNT(1) AS dividend_count
       FROM dividends
-      GROUP BY account, symbol
+      GROUP BY account_id, symbol
     ) dividend_totals
-      ON dividend_totals.account = h.account AND dividend_totals.symbol = h.symbol
-    WHERE ((h.shares * latest.price) - h.total_invested
+      ON dividend_totals.account_id = h.account_id AND dividend_totals.symbol = h.symbol
+    WHERE a.user_id = ? AND ((h.shares * latest.price) - h.total_invested
       + COALESCE(dividend_totals.dividend_net, 0)) > 0
     ORDER BY ((h.shares * latest.price) - h.total_invested
       + COALESCE(dividend_totals.dividend_net, 0)) DESC
-  `).all() as GainPosition[]
+  `).all(userId) as GainPosition[]
 }
 
 export function upsertStockSector(symbol: string, sector: string): void {
@@ -424,49 +279,54 @@ export function hasStockSector(symbol: string): boolean {
   return !!db.prepare('SELECT 1 FROM stocks WHERE symbol = ?').get(symbol)
 }
 
-export function getHoldings(account: string): HoldingWithPrice[] {
+export function getHoldings(userId: number, account: string): HoldingWithPrice[] {
+  const accountId = resolveAccountId(userId, account)
   return db.prepare(`
-    SELECT h.*,
+    SELECT h.id, a.name AS account, h.symbol, h.shares, h.cost_avg, h.total_invested,
       ps.price          AS latest_price,
       ps.fetched_at     AS latest_fetched_at,
       st.sector         AS sector
     FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
     LEFT JOIN price_snapshots ps
       ON ps.symbol = h.symbol
       AND ps.fetched_at = (
         SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = h.symbol
       )
     LEFT JOIN stocks st ON st.symbol = h.symbol
-    WHERE h.account = ?
+    WHERE h.account_id = ?
     ORDER BY h.total_invested DESC
-  `).all(account) as HoldingWithPrice[]
+  `).all(accountId) as HoldingWithPrice[]
 }
 
-export function getAllAccounts(): string[] {
-  return (db.prepare('SELECT name FROM accounts ORDER BY name').all() as { name: string }[])
+export function getAllAccounts(userId: number): string[] {
+  return (db.prepare('SELECT name FROM accounts WHERE user_id = ? ORDER BY name').all(userId) as { name: string }[])
     .map(r => r.name)
 }
 
-export function createAccount(name: string): boolean {
+export function createAccount(userId: number, name: string): boolean {
   try {
-    db.prepare('INSERT INTO accounts (name) VALUES (?)').run(name)
+    db.prepare('INSERT INTO accounts (user_id, name) VALUES (?, ?)')
+      .run(userId, name.trim().toLowerCase())
     return true
   } catch {
     return false
   }
 }
 
-export function getAllSymbols(): string[] {
+export function getAllSymbols(userId: number): string[] {
   return (db.prepare(`
-    SELECT symbol FROM holdings
+    SELECT h.symbol FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
+    WHERE a.user_id = ?
     UNION
-    SELECT symbol FROM interested_symbols
+    SELECT symbol FROM interested_symbols WHERE user_id = ?
     ORDER BY symbol
-  `).all() as { symbol: string }[])
+  `).all(userId, userId) as { symbol: string }[])
     .map(r => r.symbol)
 }
 
-export function getInterestedSymbols(): InterestedSymbol[] {
+export function getInterestedSymbols(userId: number): InterestedSymbol[] {
   return db.prepare(`
     SELECT
       interested.symbol,
@@ -484,14 +344,18 @@ export function getInterestedSymbols(): InterestedSymbol[] {
         SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = interested.symbol
       )
     LEFT JOIN stocks ON stocks.symbol = interested.symbol
-    WHERE NOT EXISTS (
-      SELECT 1 FROM holdings WHERE holdings.symbol = interested.symbol
+    WHERE interested.user_id = ?
+      AND NOT EXISTS (
+      SELECT 1 FROM holdings
+      JOIN accounts ON accounts.id = holdings.account_id
+      WHERE accounts.user_id = interested.user_id
+        AND holdings.symbol = interested.symbol
     )
     ORDER BY interested.updated_at DESC, interested.symbol ASC
-  `).all() as InterestedSymbol[]
+  `).all(userId) as InterestedSymbol[]
 }
 
-export function upsertInterestedSymbol(input: {
+export function upsertInterestedSymbol(userId: number, input: {
   symbol: string
   fair_value: number
   notes?: string | null
@@ -504,25 +368,29 @@ export function upsertInterestedSymbol(input: {
   if (!Number.isFinite(fairValue) || fairValue <= 0) {
     return { ok: false, error: 'Fair value must be a positive number' }
   }
-  if (db.prepare('SELECT 1 FROM holdings WHERE symbol = ?').get(symbol)) {
+  if (db.prepare(`
+    SELECT 1 FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
+    WHERE a.user_id = ? AND h.symbol = ?
+  `).get(userId, symbol)) {
     return { ok: false, error: `${symbol} is already in your holdings` }
   }
 
   db.prepare(`
-    INSERT INTO interested_symbols (symbol, fair_value, notes)
-    VALUES (?, ?, ?)
-    ON CONFLICT(symbol) DO UPDATE SET
+    INSERT INTO interested_symbols (user_id, symbol, fair_value, notes)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id, symbol) DO UPDATE SET
       fair_value = excluded.fair_value,
       notes = excluded.notes,
       updated_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
-  `).run(symbol, fairValue, notes)
+  `).run(userId, symbol, fairValue, notes)
 
   return { ok: true }
 }
 
-export function deleteInterestedSymbol(symbol: string): boolean {
-  return db.prepare('DELETE FROM interested_symbols WHERE symbol = ?')
-    .run(symbol.trim().toUpperCase()).changes > 0
+export function deleteInterestedSymbol(userId: number, symbol: string): boolean {
+  return db.prepare('DELETE FROM interested_symbols WHERE user_id = ? AND symbol = ?')
+    .run(userId, symbol.trim().toUpperCase()).changes > 0
 }
 
 export function storeSnapshot(symbol: string, price: number): void {
@@ -543,13 +411,14 @@ export function hasSnapshotOnDate(symbol: string, date: string): boolean {
   ).get(symbol, date)
 }
 
-export function getCombinedSharesAsOf(asOfDate: string): Record<string, number> {
+export function getCombinedSharesAsOf(userId: number, asOfDate: string): Record<string, number> {
   const txs = db.prepare(`
-    SELECT symbol, side, shares
-    FROM transactions
-    WHERE date(traded_at) <= date(?)
-    ORDER BY traded_at ASC, id ASC
-  `).all(asOfDate) as { symbol: string; side: TradeSide; shares: number }[]
+    SELECT t.symbol, t.side, t.shares
+    FROM transactions t
+    JOIN accounts a ON a.id = t.account_id
+    WHERE a.user_id = ? AND date(t.traded_at) <= date(?)
+    ORDER BY t.traded_at ASC, t.id ASC
+  `).all(userId, asOfDate) as { symbol: string; side: TradeSide; shares: number }[]
 
   const shares: Record<string, number> = {}
   for (const t of txs) {
@@ -587,11 +456,11 @@ export function getLatestPrices(): Record<string, { price: number; fetched_at: s
   return Object.fromEntries(rows.map(r => [r.symbol, { price: r.price, fetched_at: r.fetched_at }]))
 }
 
-export function getCombinedHoldingPriceHistory(): CombinedHoldingPriceSeries[] {
+export function getCombinedHoldingPriceHistory(userId: number): CombinedHoldingPriceSeries[] {
   const rows = db.prepare(`
     SELECT
       h.symbol,
-      h.account,
+      a.name AS account,
       h.shares,
       st.sector,
       first_buy.first_purchase_at,
@@ -599,11 +468,13 @@ export function getCombinedHoldingPriceHistory(): CombinedHoldingPriceSeries[] {
       latest.fetched_at AS latest_fetched_at,
       first_snap.first_snapshot_at
     FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
     LEFT JOIN stocks st ON st.symbol = h.symbol
     LEFT JOIN (
-      SELECT symbol, MIN(traded_at) AS first_purchase_at
-      FROM transactions
-      WHERE side = 'buy'
+      SELECT t.symbol, MIN(t.traded_at) AS first_purchase_at
+      FROM transactions t
+      JOIN accounts account ON account.id = t.account_id
+      WHERE t.side = 'buy' AND account.user_id = ?
       GROUP BY symbol
     ) first_buy ON first_buy.symbol = h.symbol
     LEFT JOIN (
@@ -616,8 +487,9 @@ export function getCombinedHoldingPriceHistory(): CombinedHoldingPriceSeries[] {
       AND latest.fetched_at = (
         SELECT MAX(fetched_at) FROM price_snapshots WHERE symbol = h.symbol
       )
-    ORDER BY h.symbol, h.account
-  `).all() as Array<{
+    WHERE a.user_id = ?
+    ORDER BY h.symbol, a.name
+  `).all(userId, userId) as Array<{
     symbol: string
     account: string
     shares: number
@@ -681,12 +553,14 @@ export interface PortfolioValuePoint {
   current_assets_value: number
 }
 
-export function getCurrentCombinedHoldings(): Record<string, number> {
+export function getCurrentCombinedHoldings(userId: number): Record<string, number> {
   const rows = db.prepare(`
-    SELECT symbol, SUM(shares) AS shares
-    FROM holdings
-    GROUP BY symbol
-  `).all() as { symbol: string; shares: number }[]
+    SELECT h.symbol, SUM(h.shares) AS shares
+    FROM holdings h
+    JOIN accounts a ON a.id = h.account_id
+    WHERE a.user_id = ?
+    GROUP BY h.symbol
+  `).all(userId) as { symbol: string; shares: number }[]
   return Object.fromEntries(rows.map(r => [r.symbol, r.shares]))
 }
 
@@ -751,7 +625,7 @@ export interface PurchaseImportRow {
 }
 
 function applyBuyToHolding(
-  account: string,
+  accountId: number,
   symbol: string,
   shares: number,
   costPerShare: number,
@@ -759,14 +633,14 @@ function applyBuyToHolding(
   const invested = shares * costPerShare
   const existing = db.prepare(
     `SELECT id, shares, cost_avg, total_invested
-     FROM holdings WHERE account = ? AND symbol = ?`,
-  ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+     FROM holdings WHERE account_id = ? AND symbol = ?`,
+  ).get(accountId, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
 
   if (!existing) {
     db.prepare(
-      `INSERT INTO holdings (account, symbol, shares, cost_avg, total_invested)
+      `INSERT INTO holdings (account_id, symbol, shares, cost_avg, total_invested)
        VALUES (?, ?, ?, ?, ?)`,
-    ).run(account, symbol, shares, costPerShare, invested)
+    ).run(accountId, symbol, shares, costPerShare, invested)
     return
   }
 
@@ -778,11 +652,11 @@ function applyBuyToHolding(
   ).run(nextShares, nextCostAvg, nextInvested, existing.id)
 }
 
-function applySellToHolding(account: string, symbol: string, shares: number): void {
+function applySellToHolding(accountId: number, symbol: string, shares: number): void {
   const existing = db.prepare(
     `SELECT id, shares, cost_avg, total_invested
-     FROM holdings WHERE account = ? AND symbol = ?`,
-  ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+     FROM holdings WHERE account_id = ? AND symbol = ?`,
+  ).get(accountId, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
 
   if (!existing || shares > existing.shares) {
     throw new Error(
@@ -803,58 +677,60 @@ function applySellToHolding(account: string, symbol: string, shares: number): vo
 }
 
 function storeReplayPosition(
-  account: string,
+  accountId: number,
   symbol: string,
   position: LedgerPosition | undefined,
 ): void {
   if (!position || position.shares === 0) {
-    db.prepare('DELETE FROM holdings WHERE account = ? AND symbol = ?')
-      .run(account, symbol)
+    db.prepare('DELETE FROM holdings WHERE account_id = ? AND symbol = ?')
+      .run(accountId, symbol)
     return
   }
 
   const costAvg = position.total_invested / position.shares
   db.prepare(`
-    INSERT INTO holdings (account, symbol, shares, cost_avg, total_invested)
+    INSERT INTO holdings (account_id, symbol, shares, cost_avg, total_invested)
     VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(account, symbol) DO UPDATE SET
+    ON CONFLICT(account_id, symbol) DO UPDATE SET
       shares = excluded.shares,
       cost_avg = excluded.cost_avg,
       total_invested = excluded.total_invested
-  `).run(account, symbol, position.shares, costAvg, position.total_invested)
+  `).run(accountId, symbol, position.shares, costAvg, position.total_invested)
 }
 
-export function rebuildHoldingsFromTransactions(account: string): void {
-  const acct = account.trim().toLowerCase()
+export function rebuildHoldingsFromTransactions(userId: number, account: string): void {
+  const accountId = resolveAccountId(userId, account)
   db.transaction(() => {
-    const replay = updateTransactionBalances(acct)
-    db.prepare('DELETE FROM holdings WHERE account = ?').run(acct)
+    const replay = updateTransactionBalances(accountId)
+    db.prepare('DELETE FROM holdings WHERE account_id = ?').run(accountId)
     for (const [symbol, position] of replay.positions) {
-      storeReplayPosition(acct, symbol, position)
+      storeReplayPosition(accountId, symbol, position)
     }
   })()
 }
 
 export function importPurchaseHistory(
+  userId: number,
   account: string,
   rows: PurchaseImportRow[],
   options?: { replace?: boolean },
 ): { inserted: number } {
   const acct = account.trim().toLowerCase()
+  const accountId = resolveAccountId(userId, acct)
   const replace = options?.replace ?? true
   const sorted = [...rows].sort((a, b) => a.traded_at.localeCompare(b.traded_at))
 
   const insertTx = db.prepare(`
     INSERT INTO transactions (
-      account, symbol, side, shares, cost_per_share,
+      account_id, symbol, side, shares, cost_per_share,
       rate_slip, commission, sales_tax, cdc_charges, traded_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
 
   const run = db.transaction(() => {
     if (replace) {
-      db.prepare('DELETE FROM transactions WHERE account = ?').run(acct)
-      db.prepare('DELETE FROM holdings WHERE account = ?').run(acct)
+      db.prepare('DELETE FROM transactions WHERE account_id = ?').run(accountId)
+      db.prepare('DELETE FROM holdings WHERE account_id = ?').run(accountId)
     }
 
     let inserted = 0
@@ -865,7 +741,7 @@ export function importPurchaseHistory(
       const costPerShare = row.amount / shares
       const tradedAt = row.traded_at.includes('T') ? row.traded_at : `${row.traded_at}T12:00:00Z`
       insertTx.run(
-        acct,
+        accountId,
         symbol,
         side,
         shares,
@@ -879,23 +755,25 @@ export function importPurchaseHistory(
       inserted++
     }
 
-    rebuildHoldingsFromTransactions(acct)
+    rebuildHoldingsFromTransactions(userId, acct)
     return { inserted }
   })
 
   return run()
 }
 
-export function getTransactions(account: string, limit = 500): Transaction[] {
+export function getTransactions(userId: number, account: string, limit = 500): Transaction[] {
+  const accountId = resolveAccountId(userId, account)
   return db.prepare(`
-    SELECT id, account, symbol, side, shares, cost_per_share,
+    SELECT t.id, a.name AS account, t.symbol, t.side, t.shares, t.cost_per_share,
            rate_slip, commission, sales_tax, cdc_charges,
            shares_after, total_invested_after, traded_at
-    FROM transactions
-    WHERE account = ?
-    ORDER BY traded_at DESC, id DESC
+    FROM transactions t
+    JOIN accounts a ON a.id = t.account_id
+    WHERE t.account_id = ?
+    ORDER BY t.traded_at DESC, t.id DESC
     LIMIT ?
-  `).all(account, limit) as Transaction[]
+  `).all(accountId, limit) as Transaction[]
 }
 
 function realMatches(actual: number, expected: number): boolean {
@@ -904,17 +782,20 @@ function realMatches(actual: number, expected: number): boolean {
 
 export function verifyLedger(): LedgerVerificationResult {
   const mismatches: LedgerMismatch[] = []
-  const accounts = db.prepare(
-    'SELECT DISTINCT account FROM transactions ORDER BY account',
-  ).all() as { account: string }[]
+  const accounts = db.prepare(`
+    SELECT DISTINCT a.id, a.name
+    FROM transactions t
+    JOIN accounts a ON a.id = t.account_id
+    ORDER BY a.user_id, a.name
+  `).all() as { id: number; name: string }[]
 
-  for (const { account } of accounts) {
+  for (const { id: accountId, name: account } of accounts) {
     const transactionRows = db.prepare(`
       SELECT id, symbol, shares_after, total_invested_after
       FROM transactions
-      WHERE account = ?
+      WHERE account_id = ?
       ORDER BY symbol, traded_at, id
-    `).all(account) as Array<{
+    `).all(accountId) as Array<{
       id: number
       symbol: string
       shares_after: number | null
@@ -927,7 +808,7 @@ export function verifyLedger(): LedgerVerificationResult {
     for (const symbol of symbols) {
       let replay: LedgerReplayResult
       try {
-        replay = replayAccountLedger(account, symbol)
+        replay = replayAccountLedger(accountId, symbol)
       } catch (e) {
         failedSymbols.add(symbol)
         mismatches.push({
@@ -979,8 +860,8 @@ export function verifyLedger(): LedgerVerificationResult {
     const holdings = db.prepare(`
       SELECT symbol, shares, cost_avg, total_invested
       FROM holdings
-      WHERE account = ?
-    `).all(account) as Array<Pick<
+      WHERE account_id = ?
+    `).all(accountId) as Array<Pick<
       Holding,
       'symbol' | 'shares' | 'cost_avg' | 'total_invested'
     >>
@@ -1037,7 +918,7 @@ export function verifyLedger(): LedgerVerificationResult {
   return { ok: mismatches.length === 0, mismatches }
 }
 
-export function addTrade(input: AddTradeInput): AddTradeResult {
+export function addTrade(userId: number, input: AddTradeInput): AddTradeResult {
   const account = input.account.trim().toLowerCase()
   const symbol = input.symbol.trim().toUpperCase()
   const side = input.side
@@ -1063,15 +944,14 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
     return { ok: false, error: 'Cost per share must be a positive number (or provide rate slip to calculate it)' }
   }
 
-  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)
-  if (!accountExists) return { ok: false, error: 'Account does not exist' }
+  const accountId = resolveAccountId(userId, account)
 
   const tx = db.transaction((): AddTradeResult => {
     const existing = db.prepare(
       `SELECT id, shares, cost_avg, total_invested
        FROM holdings
-       WHERE account = ? AND symbol = ?`
-    ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+       WHERE account_id = ? AND symbol = ?`
+    ).get(accountId, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
 
     if (side === 'sell') {
       if (!existing) {
@@ -1092,12 +972,12 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
 
     const insertResult = db.prepare(
       `INSERT INTO transactions (
-         account, symbol, side, shares, cost_per_share,
+         account_id, symbol, side, shares, cost_per_share,
          rate_slip, commission, sales_tax, cdc_charges,
          shares_after, total_invested_after, traded_at
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)`
     ).run(
-      account,
+      accountId,
       symbol,
       side,
       shares,
@@ -1112,24 +992,25 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
 
     const hasLaterTransaction = !!db.prepare(`
       SELECT 1 FROM transactions
-      WHERE account = ? AND symbol = ?
+      WHERE account_id = ? AND symbol = ?
         AND (traded_at > ? OR (traded_at = ? AND id > ?))
       LIMIT 1
-    `).get(account, symbol, tradedAt, tradedAt, transactionId)
+    `).get(accountId, symbol, tradedAt, tradedAt, transactionId)
     // A same-date split follows every transaction on that date, so it also
     // makes this trade non-terminal in the interleaved replay.
     const hasLaterSplit = !!db.prepare(`
       SELECT 1 FROM corporate_events
-      WHERE account = ? AND symbol = ? AND event_type = 'split'
+      WHERE account_id = ? AND symbol = ? AND event_type = 'split'
         AND effective_date >= ?
       LIMIT 1
-    `).get(account, symbol, tradedAt.slice(0, 10))
+    `).get(accountId, symbol, tradedAt.slice(0, 10))
 
     if (hasLaterTransaction || hasLaterSplit) {
-      const replay = updateTransactionBalances(account, symbol)
-      storeReplayPosition(account, symbol, replay.positions.get(symbol))
+      const replay = updateTransactionBalances(accountId, symbol)
+      storeReplayPosition(accountId, symbol, replay.positions.get(symbol))
       if (side === 'buy') {
-        db.prepare('DELETE FROM interested_symbols WHERE symbol = ?').run(symbol)
+        db.prepare('DELETE FROM interested_symbols WHERE user_id = ? AND symbol = ?')
+          .run(userId, symbol)
       }
       return { ok: true }
     }
@@ -1147,12 +1028,13 @@ export function addTrade(input: AddTradeInput): AddTradeResult {
     `).run(nextShares, nextInvested, transactionId)
 
     if (side === 'buy') {
-      applyBuyToHolding(account, symbol, shares, costPerShare)
-      db.prepare('DELETE FROM interested_symbols WHERE symbol = ?').run(symbol)
+      applyBuyToHolding(accountId, symbol, shares, costPerShare)
+      db.prepare('DELETE FROM interested_symbols WHERE user_id = ? AND symbol = ?')
+        .run(userId, symbol)
       return { ok: true }
     }
 
-    applySellToHolding(account, symbol, shares)
+    applySellToHolding(accountId, symbol, shares)
     return { ok: true }
   })
 
@@ -1210,34 +1092,39 @@ export interface ImportDividendsResult {
   errors: string[]
 }
 
-export function getDividends(account: string): Dividend[] {
+export function getDividends(userId: number, account: string): Dividend[] {
+  const accountId = resolveAccountId(userId, account)
   return db.prepare(`
-    SELECT id, account, event_id, symbol, security_name, financial_year,
-           gross_amount, net_amount, status, payment_date, shares
-    FROM dividends
-    WHERE account = ?
-    ORDER BY payment_date DESC, id DESC
-  `).all(account.trim().toLowerCase()) as Dividend[]
+    SELECT d.id, a.name AS account, d.event_id, d.symbol, d.security_name, d.financial_year,
+           d.gross_amount, d.net_amount, d.status, d.payment_date, d.shares
+    FROM dividends d
+    JOIN accounts a ON a.id = d.account_id
+    WHERE d.account_id = ?
+    ORDER BY d.payment_date DESC, d.id DESC
+  `).all(accountId) as Dividend[]
 }
 
-export function getAllDividends(): Dividend[] {
+export function getAllDividends(userId: number): Dividend[] {
   return db.prepare(`
-    SELECT id, account, event_id, symbol, security_name, financial_year,
-           gross_amount, net_amount, status, payment_date, shares
-    FROM dividends
-    ORDER BY payment_date DESC, account ASC, symbol ASC, id DESC
-  `).all() as Dividend[]
+    SELECT d.id, a.name AS account, d.event_id, d.symbol, d.security_name, d.financial_year,
+           d.gross_amount, d.net_amount, d.status, d.payment_date, d.shares
+    FROM dividends d
+    JOIN accounts a ON a.id = d.account_id
+    WHERE a.user_id = ?
+    ORDER BY d.payment_date DESC, a.name ASC, d.symbol ASC, d.id DESC
+  `).all(userId) as Dividend[]
 }
 
-export function getDividendSummary(account: string): DividendSummary {
+export function getDividendSummary(userId: number, account: string): DividendSummary {
+  const accountId = resolveAccountId(userId, account)
   const row = db.prepare(`
     SELECT COUNT(1) AS count,
            COALESCE(SUM(gross_amount), 0) AS total_gross,
            COALESCE(SUM(net_amount), 0) AS total_net,
            SUM(shares) AS total_shares
     FROM dividends
-    WHERE account = ?
-  `).get(account.trim().toLowerCase()) as {
+    WHERE account_id = ?
+  `).get(accountId) as {
     count: number
     total_gross: number
     total_net: number
@@ -1257,27 +1144,31 @@ export interface DividendAccountTotals {
   total_shares: number | null
 }
 
-export function getAllDividendTotals(): DividendAccountTotals & {
+export function getAllDividendTotals(userId: number): DividendAccountTotals & {
   by_account: Record<string, DividendAccountTotals>
   by_symbol: Record<string, DividendAccountTotals>
 } {
   const accountRows = db.prepare(`
-    SELECT account,
+    SELECT a.name AS account,
            COUNT(1) AS count,
            COALESCE(SUM(net_amount), 0) AS total_net,
            SUM(shares) AS total_shares
-    FROM dividends
-    GROUP BY account
-  `).all() as { account: string; count: number; total_net: number; total_shares: number | null }[]
+    FROM dividends d
+    JOIN accounts a ON a.id = d.account_id
+    WHERE a.user_id = ?
+    GROUP BY d.account_id, a.name
+  `).all(userId) as { account: string; count: number; total_net: number; total_shares: number | null }[]
 
   const symbolRows = db.prepare(`
     SELECT symbol,
            COUNT(1) AS count,
            COALESCE(SUM(net_amount), 0) AS total_net,
            SUM(shares) AS total_shares
-    FROM dividends
-    GROUP BY symbol
-  `).all() as { symbol: string; count: number; total_net: number; total_shares: number | null }[]
+    FROM dividends d
+    JOIN accounts a ON a.id = d.account_id
+    WHERE a.user_id = ?
+    GROUP BY d.symbol
+  `).all(userId) as { symbol: string; count: number; total_net: number; total_shares: number | null }[]
 
   const by_account: Record<string, DividendAccountTotals> = {}
   let total_net = 0
@@ -1307,7 +1198,7 @@ export function getAllDividendTotals(): DividendAccountTotals & {
   return { count, total_net, total_shares, by_account, by_symbol }
 }
 
-function validateDividendInput(input: AddDividendInput): string | null {
+function validateDividendInput(userId: number, input: AddDividendInput): string | null {
   const account = input.account.trim().toLowerCase()
   const event_id = input.event_id.trim()
   const symbol = input.symbol.trim().toUpperCase()
@@ -1333,17 +1224,18 @@ function validateDividendInput(input: AddDividendInput): string | null {
     }
   }
 
-  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)
+  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE user_id = ? AND name = ?')
+    .get(userId, account)
   if (!accountExists) return 'Account does not exist'
 
   return null
 }
 
-export function addDividend(input: AddDividendInput): { ok: boolean; error?: string; id?: number } {
-  const err = validateDividendInput(input)
+export function addDividend(userId: number, input: AddDividendInput): { ok: boolean; error?: string; id?: number } {
+  const accountId = resolveAccountId(userId, input.account)
+  const err = validateDividendInput(userId, input)
   if (err) return { ok: false, error: err }
 
-  const account = input.account.trim().toLowerCase()
   const event_id = input.event_id.trim()
   const symbol = input.symbol.trim().toUpperCase()
 
@@ -1354,11 +1246,11 @@ export function addDividend(input: AddDividendInput): { ok: boolean; error?: str
         : null
     const result = db.prepare(`
       INSERT INTO dividends (
-        account, event_id, symbol, security_name, financial_year,
+        account_id, event_id, symbol, security_name, financial_year,
         gross_amount, net_amount, status, payment_date, shares
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      account,
+      accountId,
       event_id,
       symbol,
       input.security_name?.trim() || null,
@@ -1376,21 +1268,19 @@ export function addDividend(input: AddDividendInput): { ok: boolean; error?: str
 }
 
 export function importDividends(
+  userId: number,
   account: string,
   rows: ParsedDividendRow[],
 ): ImportDividendsResult {
   const acct = account.trim().toLowerCase()
-  const accountExists = db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(acct)
-  if (!accountExists) {
-    return { inserted: 0, updated: 0, skipped: 0, errors: ['Account does not exist'] }
-  }
+  const accountId = resolveAccountId(userId, acct)
 
   const upsert = db.prepare(`
     INSERT INTO dividends (
-      account, event_id, symbol, security_name, financial_year,
+      account_id, event_id, symbol, security_name, financial_year,
       gross_amount, net_amount, status, payment_date, shares
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(account, event_id) DO UPDATE SET
+    ON CONFLICT(account_id, event_id) DO UPDATE SET
       symbol = excluded.symbol,
       security_name = COALESCE(excluded.security_name, security_name),
       financial_year = excluded.financial_year,
@@ -1402,13 +1292,13 @@ export function importDividends(
   `)
   const updateByMatch = db.prepare(`
     UPDATE dividends SET shares = ?
-    WHERE account = ? AND symbol = ? AND payment_date = ?
+    WHERE account_id = ? AND symbol = ? AND payment_date = ?
       AND ABS(net_amount - ?) < 0.01
       AND (shares IS NULL OR shares != ?)
   `)
   const findByMatch = db.prepare(`
     SELECT id FROM dividends
-    WHERE account = ? AND symbol = ? AND payment_date = ?
+    WHERE account_id = ? AND symbol = ? AND payment_date = ?
       AND ABS(net_amount - ?) < 0.01
     LIMIT 1
   `)
@@ -1425,11 +1315,11 @@ export function importDividends(
 
       if (row.event_id) {
         const before = db.prepare(
-          'SELECT id FROM dividends WHERE account = ? AND event_id = ?',
-        ).get(acct, row.event_id)
+          'SELECT id FROM dividends WHERE account_id = ? AND event_id = ?',
+        ).get(accountId, row.event_id)
         try {
           upsert.run(
-            acct,
+            accountId,
             row.event_id,
             row.symbol,
             row.security_name,
@@ -1453,7 +1343,7 @@ export function importDividends(
         continue
       }
 
-      const match = findByMatch.get(acct, row.symbol, row.payment_date, row.net_amount) as
+      const match = findByMatch.get(accountId, row.symbol, row.payment_date, row.net_amount) as
         | { id: number }
         | undefined
       if (!match) {
@@ -1466,7 +1356,7 @@ export function importDividends(
       }
       const result = updateByMatch.run(
         shares,
-        acct,
+        accountId,
         row.symbol,
         row.payment_date,
         row.net_amount,
@@ -1482,10 +1372,11 @@ export function importDividends(
   return run()
 }
 
-export function deleteDividend(id: number, account: string): boolean {
+export function deleteDividend(userId: number, id: number, account: string): boolean {
+  const accountId = resolveAccountId(userId, account)
   const result = db.prepare(
-    'DELETE FROM dividends WHERE id = ? AND account = ?',
-  ).run(id, account.trim().toLowerCase())
+    'DELETE FROM dividends WHERE id = ? AND account_id = ?',
+  ).run(id, accountId)
   return result.changes > 0
 }
 
@@ -1517,27 +1408,29 @@ export interface AddCorporateEventInput {
 }
 
 function getHoldingForEvent(
-  account: string,
+  accountId: number,
   symbol: string,
 ): Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined {
   return db.prepare(
     `SELECT id, shares, cost_avg, total_invested
-     FROM holdings WHERE account = ? AND symbol = ?`,
-  ).get(account, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
+     FROM holdings WHERE account_id = ? AND symbol = ?`,
+  ).get(accountId, symbol) as Pick<Holding, 'id' | 'shares' | 'cost_avg' | 'total_invested'> | undefined
 }
 
-export function getCorporateEvents(account: string): CorporateEvent[] {
+export function getCorporateEvents(userId: number, account: string): CorporateEvent[] {
+  const accountId = resolveAccountId(userId, account)
   return db.prepare(`
-    SELECT id, account, symbol, event_type, effective_date,
-           ratio_from, ratio_to, shares_before, shares_after,
-           cost_avg_before, cost_avg_after, notes
-    FROM corporate_events
-    WHERE account = ?
-    ORDER BY effective_date DESC, id DESC
-  `).all(account.trim().toLowerCase()) as CorporateEvent[]
+    SELECT e.id, a.name AS account, e.symbol, e.event_type, e.effective_date,
+           e.ratio_from, e.ratio_to, e.shares_before, e.shares_after,
+           e.cost_avg_before, e.cost_avg_after, e.notes
+    FROM corporate_events e
+    JOIN accounts a ON a.id = e.account_id
+    WHERE e.account_id = ?
+    ORDER BY e.effective_date DESC, e.id DESC
+  `).all(accountId) as CorporateEvent[]
 }
 
-function validateCorporateEventInput(input: AddCorporateEventInput): string | null {
+function validateCorporateEventInput(userId: number, input: AddCorporateEventInput): string | null {
   const account = input.account.trim().toLowerCase()
   const symbol = input.symbol.trim().toUpperCase()
   const effectiveDate = input.effective_date.trim()
@@ -1555,11 +1448,13 @@ function validateCorporateEventInput(input: AddCorporateEventInput): string | nu
     return 'Ratio "to" must be a positive integer'
   }
 
-  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)) {
+  const accountRow = db.prepare('SELECT id FROM accounts WHERE user_id = ? AND name = ?')
+    .get(userId, account) as { id: number } | undefined
+  if (!accountRow) {
     return 'Account does not exist'
   }
 
-  const holding = getHoldingForEvent(account, symbol)
+  const holding = getHoldingForEvent(accountRow.id, symbol)
   if (!holding || holding.shares <= 0) {
     return `No holding for ${symbol} in this account`
   }
@@ -1568,14 +1463,15 @@ function validateCorporateEventInput(input: AddCorporateEventInput): string | nu
 }
 
 export function addCorporateEvent(
+  userId: number,
   input: AddCorporateEventInput,
 ): { ok: boolean; error?: string; id?: number } {
-  const err = validateCorporateEventInput(input)
+  const accountId = resolveAccountId(userId, input.account)
+  const err = validateCorporateEventInput(userId, input)
   if (err) return { ok: false, error: err }
 
-  const account = input.account.trim().toLowerCase()
   const symbol = input.symbol.trim().toUpperCase()
-  const holding = getHoldingForEvent(account, symbol)!
+  const holding = getHoldingForEvent(accountId, symbol)!
   const notes = input.notes?.trim() || null
 
   let adjustment
@@ -1593,12 +1489,12 @@ export function addCorporateEvent(
   const tx = db.transaction(() => {
     const result = db.prepare(`
       INSERT INTO corporate_events (
-        account, symbol, event_type, effective_date,
+        account_id, symbol, event_type, effective_date,
         ratio_from, ratio_to, shares_before, shares_after,
         cost_avg_before, cost_avg_after, notes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      account,
+      accountId,
       symbol,
       'split',
       input.effective_date.trim(),
@@ -1620,7 +1516,7 @@ export function addCorporateEvent(
       holding.id,
     )
 
-    updateTransactionBalances(account, symbol)
+    updateTransactionBalances(accountId, symbol)
 
     return Number(result.lastInsertRowid)
   })
@@ -1634,16 +1530,19 @@ export function addCorporateEvent(
 }
 
 export function deleteCorporateEvent(
+  userId: number,
   id: number,
   account: string,
 ): { ok: boolean; error?: string } {
   const acct = account.trim().toLowerCase()
+  const accountId = resolveAccountId(userId, acct)
   const event = db.prepare(`
-    SELECT id, account, symbol, shares_before, shares_after,
-           cost_avg_before, cost_avg_after
-    FROM corporate_events
-    WHERE id = ? AND account = ?
-  `).get(id, acct) as
+    SELECT e.id, a.name AS account, e.symbol, e.shares_before, e.shares_after,
+           e.cost_avg_before, e.cost_avg_after
+    FROM corporate_events e
+    JOIN accounts a ON a.id = e.account_id
+    WHERE e.id = ? AND e.account_id = ?
+  `).get(id, accountId) as
     | Pick<
         CorporateEvent,
         | 'id'
@@ -1658,7 +1557,7 @@ export function deleteCorporateEvent(
 
   if (!event) return { ok: false, error: 'Event not found' }
 
-  const holding = getHoldingForEvent(acct, event.symbol)
+  const holding = getHoldingForEvent(accountId, event.symbol)
   if (!holding) {
     return { ok: false, error: 'Holding no longer exists; cannot reverse event' }
   }
@@ -1674,8 +1573,8 @@ export function deleteCorporateEvent(
     db.prepare(
       `UPDATE holdings SET shares = ?, cost_avg = ?, total_invested = ? WHERE id = ?`,
     ).run(event.shares_before, event.cost_avg_before, totalInvested, holding.id)
-    db.prepare('DELETE FROM corporate_events WHERE id = ? AND account = ?').run(id, acct)
-    updateTransactionBalances(acct, event.symbol)
+    db.prepare('DELETE FROM corporate_events WHERE id = ? AND account_id = ?').run(id, accountId)
+    updateTransactionBalances(accountId, event.symbol)
   })
 
   try {
@@ -1716,10 +1615,12 @@ export interface AddAccountChargeInput {
   notes?: string | null
 }
 
-function validateAccountChargeInput(input: AddAccountChargeInput): string | null {
+function validateAccountChargeInput(userId: number, input: AddAccountChargeInput): string | null {
   const account = input.account.trim().toLowerCase()
   if (!account) return 'Account is required'
-  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(account)) {
+  const accountRow = db.prepare('SELECT id FROM accounts WHERE user_id = ? AND name = ?')
+    .get(userId, account) as { id: number } | undefined
+  if (!accountRow) {
     return 'Account does not exist'
   }
   if (!isAccountChargeCategory(input.category)) return 'Invalid category'
@@ -1735,26 +1636,30 @@ function validateAccountChargeInput(input: AddAccountChargeInput): string | null
   const voucher = input.voucher_no?.trim() || null
   if (voucher) {
     const dup = db.prepare(
-      'SELECT 1 FROM account_charges WHERE account = ? AND voucher_no = ?',
-    ).get(account, voucher)
+      'SELECT 1 FROM account_charges WHERE account_id = ? AND voucher_no = ?',
+    ).get(accountRow.id, voucher)
     if (dup) return `Voucher ${voucher} already exists for this account`
   }
   return null
 }
 
-export function getAccountCharges(account: string): AccountCharge[] {
+export function getAccountCharges(userId: number, account: string): AccountCharge[] {
+  const accountId = resolveAccountId(userId, account)
   return db.prepare(`
-    SELECT id, account, category, label, amount, charged_at, voucher_no, notes
-    FROM account_charges
-    WHERE account = ?
-    ORDER BY charged_at DESC, id DESC
-  `).all(account.trim().toLowerCase()) as AccountCharge[]
+    SELECT c.id, a.name AS account, c.category, c.label, c.amount, c.charged_at,
+           c.voucher_no, c.notes
+    FROM account_charges c
+    JOIN accounts a ON a.id = c.account_id
+    WHERE c.account_id = ?
+    ORDER BY c.charged_at DESC, c.id DESC
+  `).all(accountId) as AccountCharge[]
 }
 
-export function getAccountChargeSummary(account: string): AccountChargeSummary {
+export function getAccountChargeSummary(userId: number, account: string): AccountChargeSummary {
+  const accountId = resolveAccountId(userId, account)
   const rows = db.prepare(`
-    SELECT amount FROM account_charges WHERE account = ?
-  `).all(account.trim().toLowerCase()) as { amount: number }[]
+    SELECT amount FROM account_charges WHERE account_id = ?
+  `).all(accountId) as { amount: number }[]
 
   let total_debits = 0
   let total_credits = 0
@@ -1771,21 +1676,22 @@ export function getAccountChargeSummary(account: string): AccountChargeSummary {
 }
 
 export function addAccountCharge(
+  userId: number,
   input: AddAccountChargeInput,
 ): { ok: boolean; error?: string; id?: number } {
-  const err = validateAccountChargeInput(input)
+  const accountId = resolveAccountId(userId, input.account)
+  const err = validateAccountChargeInput(userId, input)
   if (err) return { ok: false, error: err }
 
-  const account = input.account.trim().toLowerCase()
   const voucher = input.voucher_no?.trim() || null
   const notes = input.notes?.trim() || null
 
   try {
     const result = db.prepare(`
-      INSERT INTO account_charges (account, category, label, amount, charged_at, voucher_no, notes)
+      INSERT INTO account_charges (account_id, category, label, amount, charged_at, voucher_no, notes)
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `).run(
-      account,
+      accountId,
       input.category,
       input.label.trim(),
       Math.round(input.amount * 100) / 100,
@@ -1801,10 +1707,11 @@ export function addAccountCharge(
   }
 }
 
-export function deleteAccountCharge(id: number, account: string): boolean {
+export function deleteAccountCharge(userId: number, id: number, account: string): boolean {
+  const accountId = resolveAccountId(userId, account)
   const result = db.prepare(
-    'DELETE FROM account_charges WHERE id = ? AND account = ?',
-  ).run(id, account.trim().toLowerCase())
+    'DELETE FROM account_charges WHERE id = ? AND account_id = ?',
+  ).run(id, accountId)
   return result.changes > 0
 }
 
@@ -1818,16 +1725,15 @@ export interface AccountChargeSeedRow {
 }
 
 export function importAccountCharges(
+  userId: number,
   account: string,
   rows: AccountChargeSeedRow[],
 ): { inserted: number; skipped: number; errors: string[] } {
   const acct = account.trim().toLowerCase()
-  if (!db.prepare('SELECT 1 FROM accounts WHERE name = ?').get(acct)) {
-    return { inserted: 0, skipped: 0, errors: ['Account does not exist'] }
-  }
+  const accountId = resolveAccountId(userId, acct)
 
   const existsStmt = db.prepare(
-    'SELECT 1 FROM account_charges WHERE account = ? AND voucher_no = ?',
+    'SELECT 1 FROM account_charges WHERE account_id = ? AND voucher_no = ?',
   )
   let inserted = 0
   let skipped = 0
@@ -1835,11 +1741,11 @@ export function importAccountCharges(
 
   for (const row of rows) {
     const voucher = row.voucher_no.trim()
-    if (existsStmt.get(acct, voucher)) {
+    if (existsStmt.get(accountId, voucher)) {
       skipped++
       continue
     }
-    const result = addAccountCharge({
+    const result = addAccountCharge(userId, {
       account: acct,
       category: row.category,
       label: row.label,
@@ -1855,7 +1761,7 @@ export function importAccountCharges(
   return { inserted, skipped, errors }
 }
 
-export function getPortfolioValueHistory(): PortfolioValuePoint[] {
+export function getPortfolioValueHistory(userId: number): PortfolioValuePoint[] {
   const days = (db.prepare(`
     SELECT DISTINCT date(fetched_at) AS d
     FROM price_snapshots
@@ -1870,10 +1776,10 @@ export function getPortfolioValueHistory(): PortfolioValuePoint[] {
     ORDER BY fetched_at DESC LIMIT 1
   `)
 
-  const currentHoldings = getCurrentCombinedHoldings()
+  const currentHoldings = getCurrentCombinedHoldings(userId)
 
   return days.map(({ d }) => {
-    const holdings = getCombinedSharesAsOf(d)
+    const holdings = getCombinedSharesAsOf(userId, d)
     let portfolio_value = 0
     for (const [symbol, qty] of Object.entries(holdings)) {
       const row = priceStmt.get(symbol, d) as { price: number } | undefined

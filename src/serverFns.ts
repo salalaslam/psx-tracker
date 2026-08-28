@@ -38,6 +38,7 @@ import { parseDividendPaste, parsePaymentDate } from './dividends'
 import { buildCombinedDividendTaxReport } from './dividendTax'
 import { fetchAllPrices, fetchAndStoreSectors, fetchPsxQuote } from './psx.server'
 import { getHoldingsMarketMetrics, getValueResearchReport } from './valueResearch.server'
+import { getCurrentUser } from './auth.server'
 
 async function ensureMissingSectors(): Promise<{ fetched: number; failed: string[] }> {
   const missing = getSymbolsMissingSector()
@@ -48,18 +49,18 @@ async function ensureMissingSectors(): Promise<{ fetched: number; failed: string
 
 export const serverGetHoldings = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
-  .handler(async ({ data }) => getHoldings(data))
+  .handler(async ({ data }) => getHoldings(getCurrentUser().id, data))
 
 export const serverGetGainPositions = createServerFn({ method: 'GET' }).handler(
-  async () => getGainPositions(),
+  async () => getGainPositions(getCurrentUser().id),
 )
 
 export const serverGetTransactions = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
-  .handler(async ({ data }) => getTransactions(data))
+  .handler(async ({ data }) => getTransactions(getCurrentUser().id, data))
 
 export const serverGetAllAccounts = createServerFn({ method: 'GET' }).handler(
-  async () => getAllAccounts(),
+  async () => getAllAccounts(getCurrentUser().id),
 )
 
 export const serverCreateAccount = createServerFn({ method: 'POST' })
@@ -68,7 +69,7 @@ export const serverCreateAccount = createServerFn({ method: 'POST' })
     if (str.length < 1 || str.length > 50) throw new Error('Account name must be 1-50 characters')
     return str
   })
-  .handler(async ({ data }) => createAccount(data))
+  .handler(async ({ data }) => createAccount(getCurrentUser().id, data))
 
 export const serverAddTrade = createServerFn({ method: 'POST' })
   .validator((input: unknown) => {
@@ -135,7 +136,7 @@ export const serverAddTrade = createServerFn({ method: 'POST' })
     }
   })
   .handler(async ({ data }) => {
-    const result = addTrade(data)
+    const result = addTrade(getCurrentUser().id, data)
     if (result.ok && !hasStockSector(data.symbol)) {
       const { sector } = await fetchPsxQuote(data.symbol)
       if (sector) upsertStockSector(data.symbol, sector)
@@ -148,7 +149,7 @@ export const serverGetLatestPrices = createServerFn({ method: 'GET' }).handler(
 )
 
 export const serverGetInterestedSymbols = createServerFn({ method: 'GET' }).handler(
-  async () => getInterestedSymbols(),
+  async () => getInterestedSymbols(getCurrentUser().id),
 )
 
 export const serverUpsertInterestedSymbol = createServerFn({ method: 'POST' })
@@ -167,7 +168,7 @@ export const serverUpsertInterestedSymbol = createServerFn({ method: 'POST' })
     return { symbol, fair_value, notes }
   })
   .handler(async ({ data }) => {
-    const result = upsertInterestedSymbol(data)
+    const result = upsertInterestedSymbol(getCurrentUser().id, data)
     if (!result.ok) throw new Error(result.error)
 
     const { price, sector } = await fetchPsxQuote(data.symbol)
@@ -182,14 +183,14 @@ export const serverDeleteInterestedSymbol = createServerFn({ method: 'POST' })
     if (!/^[A-Z0-9.-]{1,20}$/.test(normalized)) throw new Error('Invalid PSX symbol')
     return normalized
   })
-  .handler(async ({ data }) => ({ ok: deleteInterestedSymbol(data) }))
+  .handler(async ({ data }) => ({ ok: deleteInterestedSymbol(getCurrentUser().id, data) }))
 
 export const serverGetPriceHistory = createServerFn({ method: 'GET' })
   .validator((symbol: unknown) => String(symbol))
   .handler(async ({ data }) => getPriceHistory(data))
 
 export const serverGetCombinedHoldingPriceHistory = createServerFn({ method: 'GET' }).handler(
-  async () => getCombinedHoldingPriceHistory(),
+  async () => getCombinedHoldingPriceHistory(getCurrentUser().id),
 )
 
 export type FetchResult = {
@@ -205,7 +206,7 @@ export const serverEnsureSectors = createServerFn({ method: 'GET' }).handler(
 
 export const serverFetchAndStorePrices = createServerFn({ method: 'POST' }).handler(
   async (): Promise<FetchResult[]> => {
-    const symbols = getAllSymbols()
+    const symbols = getAllSymbols(getCurrentUser().id)
     const fetched = await fetchAllPrices(symbols)
     const results: FetchResult[] = []
     for (const { symbol, price, sector, error } of fetched) {
@@ -223,22 +224,22 @@ export const serverFetchAndStorePrices = createServerFn({ method: 'POST' }).hand
 )
 
 export const serverGetPortfolioHistory = createServerFn({ method: 'GET' }).handler(
-  async () => getPortfolioValueHistory(),
+  async () => getPortfolioValueHistory(getCurrentUser().id),
 )
 
 export const serverGetValueResearchReport = createServerFn({ method: 'GET' }).handler(
-  async () => getValueResearchReport(),
+  async () => getValueResearchReport(getCurrentUser().id),
 )
 
 export const serverGetHoldingsMarketMetrics = createServerFn({ method: 'GET' }).handler(
-  async () => getHoldingsMarketMetrics(),
+  async () => getHoldingsMarketMetrics(getCurrentUser().id),
 )
 
 export const serverGetAccountCharges = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
   .handler(async ({ data }) => ({
-    charges: getAccountCharges(data),
-    summary: getAccountChargeSummary(data),
+    charges: getAccountCharges(getCurrentUser().id, data),
+    summary: getAccountChargeSummary(getCurrentUser().id, data),
   }))
 
 export const serverAddAccountCharge = createServerFn({ method: 'POST' })
@@ -268,7 +269,7 @@ export const serverAddAccountCharge = createServerFn({ method: 'POST' })
 
     return { account, category, label, amount, charged_at, voucher_no, notes }
   })
-  .handler(async ({ data }) => addAccountCharge(data))
+  .handler(async ({ data }) => addAccountCharge(getCurrentUser().id, data))
 
 export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
   .validator((input: unknown) => {
@@ -280,7 +281,7 @@ export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
     return { id, account }
   })
   .handler(async ({ data }) => {
-    const ok = deleteAccountCharge(data.id, data.account)
+    const ok = deleteAccountCharge(getCurrentUser().id, data.id, data.account)
     if (!ok) throw new Error('Charge not found')
     return { ok: true }
   })
@@ -288,16 +289,16 @@ export const serverDeleteAccountCharge = createServerFn({ method: 'POST' })
 export const serverGetDividends = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
   .handler(async ({ data }) => ({
-    dividends: getDividends(data),
-    summary: getDividendSummary(data),
+    dividends: getDividends(getCurrentUser().id, data),
+    summary: getDividendSummary(getCurrentUser().id, data),
   }))
 
 export const serverGetAllDividendTotals = createServerFn({ method: 'GET' }).handler(
-  async () => getAllDividendTotals(),
+  async () => getAllDividendTotals(getCurrentUser().id),
 )
 
 export const serverGetCombinedDividendTaxReport = createServerFn({ method: 'GET' }).handler(
-  async () => buildCombinedDividendTaxReport(getAllDividends()),
+  async () => buildCombinedDividendTaxReport(getAllDividends(getCurrentUser().id)),
 )
 
 export const serverAddDividend = createServerFn({ method: 'POST' })
@@ -349,7 +350,7 @@ export const serverAddDividend = createServerFn({ method: 'POST' })
       ...(shares != null && Number.isFinite(shares) ? { shares } : {}),
     }
   })
-  .handler(async ({ data }) => addDividend(data))
+  .handler(async ({ data }) => addDividend(getCurrentUser().id, data))
 
 export const serverImportDividends = createServerFn({ method: 'POST' })
   .validator((input: unknown) => {
@@ -370,7 +371,7 @@ export const serverImportDividends = createServerFn({ method: 'POST' })
         errors: parseErrors.length > 0 ? parseErrors : ['No valid rows to import'],
       }
     }
-    const result = importDividends(data.account, rows)
+    const result = importDividends(getCurrentUser().id, data.account, rows)
     return {
       ...result,
       errors: [...parseErrors, ...result.errors],
@@ -387,14 +388,14 @@ export const serverDeleteDividend = createServerFn({ method: 'POST' })
     return { id, account }
   })
   .handler(async ({ data }) => {
-    const ok = deleteDividend(data.id, data.account)
+    const ok = deleteDividend(getCurrentUser().id, data.id, data.account)
     if (!ok) throw new Error('Dividend not found')
     return { ok: true }
   })
 
 export const serverGetCorporateEvents = createServerFn({ method: 'GET' })
   .validator((account: unknown) => String(account))
-  .handler(async ({ data }) => getCorporateEvents(data))
+  .handler(async ({ data }) => getCorporateEvents(getCurrentUser().id, data))
 
 export const serverAddCorporateEvent = createServerFn({ method: 'POST' })
   .validator((input: unknown) => {
@@ -433,7 +434,7 @@ export const serverAddCorporateEvent = createServerFn({ method: 'POST' })
       notes,
     }
   })
-  .handler(async ({ data }) => addCorporateEvent(data))
+  .handler(async ({ data }) => addCorporateEvent(getCurrentUser().id, data))
 
 export const serverDeleteCorporateEvent = createServerFn({ method: 'POST' })
   .validator((input: unknown) => {
@@ -444,4 +445,4 @@ export const serverDeleteCorporateEvent = createServerFn({ method: 'POST' })
     if (!account) throw new Error('Account is required')
     return { id, account }
   })
-  .handler(async ({ data }) => deleteCorporateEvent(data.id, data.account))
+  .handler(async ({ data }) => deleteCorporateEvent(getCurrentUser().id, data.id, data.account))

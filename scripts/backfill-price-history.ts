@@ -3,13 +3,14 @@ import db, {
   hasSnapshotOnDate,
   storeSnapshotAt,
 } from '../src/db.server.ts'
+import { getCurrentUser } from '../src/auth.server.ts'
 import { fetchPsxEod } from '../src/psx.server.ts'
 
 const SINCE = process.argv[2] ?? '2025-09-01'
 
 const txSymbols = (db.prepare('SELECT DISTINCT symbol FROM transactions').all() as { symbol: string }[])
   .map(r => r.symbol)
-const holdingSymbols = getAllSymbols()
+const holdingSymbols = getAllSymbols(getCurrentUser().id)
 const symbols = [...new Set([...txSymbols, ...holdingSymbols])].sort()
 
 let stored = 0

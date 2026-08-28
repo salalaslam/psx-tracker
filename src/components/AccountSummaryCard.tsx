@@ -76,6 +76,7 @@ export function AccountSummaryCard({
         <Link
           to="/account/$name"
           params={{ name: account }}
+          search={{ tab: 'portfolio' }}
           className="rounded-md bg-gray-800 px-3 py-1 text-xs text-gray-300 hover:bg-gray-700 transition-colors"
         >
           <span className="inline-flex items-center gap-1">
